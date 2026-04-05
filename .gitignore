@@ -1,0 +1,14 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+saathi.db
+
+# Node / React
+saathi-web/node_modules/
+saathi-web/dist/
+.DS_Store
+
+# Secrets
+.env
+saathi_extracted.txt

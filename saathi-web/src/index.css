@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-primary: #faf9f6;
+    --bg-secondary: #ffffff;
+    --bg-panel: rgba(255, 255, 255, 0.6);
+    --text-primary: #2c2a29;
+    --text-secondary: #78716c;
+    --accent: #059669; /* Emerald */
+    --accent-glow: rgba(5, 150, 105, 0.15);
+    
+    /* Japanese art vibe / Thine */
+    --blob-1: #e0dcd3;
+    --blob-2: #dfd6d1;
+    --border-color: rgba(0,0,0,0.06);
+    --cherry-blossom: #fce7f3;
+  }
+
+  .dark {
+    --bg-primary: #0f1115; /* Deep rich dark */
+    --bg-secondary: #16181d;
+    --bg-panel: rgba(22, 24, 29, 0.6);
+    --text-primary: #e4e4e7;
+    --text-secondary: #a1a1aa;
+    --accent: #10b981; /* Lighter emerald for dark mode */
+    --accent-glow: rgba(16, 185, 129, 0.15);
+    
+    --blob-1: #2a1f2d; /* Subtle pink/purple dark blob */
+    --blob-2: #1e2630; /* Subtle blue dark blob */
+    --border-color: rgba(255,255,255,0.06);
+    --cherry-blossom: #4a1d35;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    transition: background-color 0.5s ease;
+  }
+}
+
+/* Utilities */
+@layer utilities {
+  .bg-primary { background-color: var(--bg-primary); }
+  .bg-secondary { background-color: var(--bg-secondary); }
+  .text-primary { color: var(--text-primary); }
+  .text-secondary { color: var(--text-secondary); }
+  .border-theme { border-color: var(--border-color); }
+  
+  .glass-panel {
+    background: var(--bg-panel);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+  }
+
+  .animate-blob {
+    animation: blob 10s infinite alternate cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .animation-delay-2000 {
+    animation-delay: 2s;
+  }
+}
+
+@keyframes blob {
+  0% { transform: translate(0px, 0px) scale(1); }
+  33% { transform: translate(30px, -50px) scale(1.1); }
+  66% { transform: translate(-20px, 20px) scale(0.9); }
+  100% { transform: translate(0px, 0px) scale(1); }
+}
+
+/* Custom scrollbar for ultra clean look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
