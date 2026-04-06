@@ -71,7 +71,7 @@ async def chat_with_saathi(req: ChatRequest):
     
     full_prompt = f"System: {system_prompt}\nContext: {context}\nUser: {req.message}\nSaathi:"
     
-    timeout_client = httpx.Timeout(120.0, connect=10.0)
+    timeout_client = httpx.Timeout(300.0, connect=10.0)
     
     async with httpx.AsyncClient(timeout=timeout_client) as client:
         try:
