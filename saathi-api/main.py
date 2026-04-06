@@ -53,7 +53,6 @@ async def chat_with_saathi(req: ChatRequest):
     language = settings.get("language", "English")
     
     context = ""
-    # Explicit + button web search overriding keyword match
     if req.require_web_search:
         try:
             search_results = search_web(req.message)
@@ -61,7 +60,6 @@ async def chat_with_saathi(req: ChatRequest):
         except Exception as e:
             context += f"[Live search failed: {e}]\n"
 
-    # Module 13: Automatic system context gathering
     try:
         active_app = get_active_window_context()
         clipboard_data = get_clipboard()
@@ -69,12 +67,7 @@ async def chat_with_saathi(req: ChatRequest):
     except:
         pass
         
-    # Module 11: Task Agent execution mapping
-    sys_action_result = agentic_execute(req.message)
-    if sys_action_result and "no immediate desktop tools" not in sys_action_result:
-         context += f"SYSTEM ACTION TAKEN: {sys_action_result}\n"
-
-    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You have deep system integration (Module 11 & 13 active). The user's name is {user_name}. You must answer in {language}. If you took a system action, mention it. Be friendly, calm, and insightful."
+    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You have deep system integration (Module 11 & 13 active). The user's name is {user_name}. You must answer in {language}. If you are asked to write code and open an editor, write the code in standard markdown blocks so the background system can exact it. Be friendly, calm, and insightful."
     
     full_prompt = f"System: {system_prompt}\nContext: {context}\nUser: {req.message}\nSaathi:"
     
@@ -90,7 +83,16 @@ async def chat_with_saathi(req: ChatRequest):
             
             if response.status_code == 200:
                 data = response.json()
-                return {"reply": data.get("response", "").strip()}
+                ai_reply = data.get("response", "").strip()
+                
+                # Module 11/13: Post-Generation Agent Execution
+                sys_action_result = agentic_execute(req.message, llm_response=ai_reply)
+                
+                # We can append confirmation if a physical action was successfully completed via code regex
+                if sys_action_result and "no immediate desktop tools" not in sys_action_result:
+                    ai_reply += f"\n\n*(System Note: {sys_action_result})*"
+                
+                return {"reply": ai_reply}
             else:
                 return {"reply": f"Hmm. My internal engine returned an error: {response.text}"}
         except httpx.ConnectError:
