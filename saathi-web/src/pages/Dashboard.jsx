@@ -1,42 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Send, Clock, Settings, BookOpen, Mic, MicOff,
-  Volume2, VolumeX, X, Moon, Sun, Plus, AlignLeft, Calendar
+  Send, Home, MessageSquarePlus, History, Settings,
+  Mic, MicOff, Volume2, VolumeX, X, Moon, Sun, ChevronUp, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// ── Code block parser (no external deps) ─────────────────────────────────────
-function FormattedMessage({ text }) {
-  const segments = text.split(/(```[\s\S]*?```)/g);
+// thumbnail emoji set for research cards
+const THUMBS = ['🧬','🤖','🔬','🧠','⚛️','📡','🌿','💡','🕹️','📊'];
+
+// ── Inline code formatter (no external deps) ─────────────────────────────────
+function Msg({ text }) {
+  const parts = text.split(/(```[\s\S]*?```)/g);
   return (
     <>
-      {segments.map((seg, i) => {
-        if (seg.startsWith('```')) {
-          const raw = seg.slice(3, -3);
-          const nl = raw.indexOf('\n');
+      {parts.map((p, i) => {
+        if (p.startsWith('```')) {
+          const raw  = p.slice(3, -3);
+          const nl   = raw.indexOf('\n');
           const lang = nl > -1 ? raw.slice(0, nl).trim() : '';
           const code = nl > -1 ? raw.slice(nl + 1) : raw;
           return (
             <pre key={i}>
-              {lang && (
-                <span style={{
-                  display: 'block', fontSize: 9, letterSpacing: '0.14em',
-                  textTransform: 'uppercase', color: 'var(--accent)',
-                  marginBottom: 10, fontFamily: 'DM Sans, sans-serif'
-                }}>{lang}</span>
-              )}
+              {lang && <span style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--accent)', display: 'block', marginBottom: 8 }}>{lang}</span>}
               {code}
             </pre>
           );
         }
-        // inline code pass
-        const inline = seg.split(/(`[^`]+`)/g);
         return (
           <span key={i}>
-            {inline.map((part, j) =>
-              part.startsWith('`') && part.endsWith('`')
-                ? <code key={j}>{part.slice(1, -1)}</code>
-                : part
+            {p.split(/(`[^`]+`)/g).map((s, j) =>
+              s.startsWith('`') && s.endsWith('`')
+                ? <code key={j}>{s.slice(1, -1)}</code>
+                : s
             )}
           </span>
         );
@@ -45,194 +40,180 @@ function FormattedMessage({ text }) {
   );
 }
 
-// ── Main Dashboard ────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const [query, setQuery]       = useState('');
-  const [mode, setMode]         = useState('chat');
+  const [query, setQuery]         = useState('');
+  const [mode, setMode]           = useState('chat');
+  const [view, setView]           = useState('home'); // home | history
   const [sessionId, setSessionId] = useState(null);
-  const [chatHistory, setChatHistory] = useState([
+  const [chat, setChat]           = useState([
     { role: 'ai', text: 'Peace and welcome.\nHow may I assist you today?' }
   ]);
-  const [sessions, setSessions] = useState([]);
-  const [events, setEvents]     = useState([]);
-  const [research, setResearch] = useState([]);
-  const [isTyping, setIsTyping] = useState(false);
+  const [sessions, setSessions]   = useState([]);
+  const [events, setEvents]       = useState([]);
+  const [research, setResearch]   = useState([]);
+  const [isTyping, setIsTyping]   = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceOn, setVoiceOn]     = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [isDark, setIsDark]     = useState(false);
+  const [isDark, setIsDark]       = useState(false);
+  const [ffOpen, setFfOpen]       = useState(true);
+  const [ifOpen, setIfOpen]       = useState(true);
   const [userSettings, setUserSettings] = useState({
     name: 'Guest', interests: 'machine learning', language: 'English', theme: 'light'
   });
-  const messagesEnd = useRef(null);
+  const endRef = useRef(null);
 
-  // helpers
-  const applyTheme = (dark) => {
-    document.documentElement.classList.toggle('dark', dark);
-    setIsDark(dark);
-  };
+  const applyDark = (d) => { document.documentElement.classList.toggle('dark', d); setIsDark(d); };
 
   const fetchSessions = async () => {
-    try {
-      const r = await fetch('http://localhost:8000/api/sessions');
-      const d = await r.json();
-      setSessions(d.sessions || []);
-    } catch {}
+    try { const r = await fetch('http://localhost:8000/api/sessions'); const d = await r.json(); setSessions(d.sessions || []); } catch {}
   };
 
   const loadSession = async (id) => {
-    setSessionId(id);
+    setSessionId(id); setView('home');
     try {
       const r = await fetch(`http://localhost:8000/api/sessions/${id}`);
       const d = await r.json();
-      setChatHistory(d.messages?.length
-        ? d.messages
-        : [{ role: 'ai', text: 'Peace and welcome.\nHow may I assist you today?' }]
-      );
+      setChat(d.messages?.length ? d.messages : [{ role: 'ai', text: 'What shall we explore?' }]);
     } catch {}
   };
 
   const newChat = async () => {
+    setView('home');
     try {
       const r = await fetch('http://localhost:8000/api/sessions', { method: 'POST' });
       const d = await r.json();
       setSessionId(d.session_id);
-      setChatHistory([{ role: 'ai', text: 'New session.\nWhat shall we explore?' }]);
+      setChat([{ role: 'ai', text: 'New session. What shall we explore?' }]);
       fetchSessions();
     } catch {}
   };
 
   const boot = () => {
-    fetch('http://localhost:8000/api/settings')
-      .then(r => r.json()).then(d => {
-        setUserSettings(d);
-        applyTheme(d.theme === 'dark');
-      }).catch(() => {});
-    fetch('http://localhost:8000/api/calendar')
-      .then(r => r.json()).then(d => setEvents(d.events || [])).catch(() => {});
-    fetch('http://localhost:8000/api/research')
-      .then(r => r.json()).then(d => setResearch(d.papers || [])).catch(() => {});
+    fetch('http://localhost:8000/api/settings').then(r => r.json()).then(d => {
+      setUserSettings(d);
+      applyDark(d.theme === 'dark');
+    }).catch(() => {});
+    fetch('http://localhost:8000/api/calendar').then(r => r.json()).then(d => setEvents(d.events || [])).catch(() => {});
+    fetch('http://localhost:8000/api/research').then(r => r.json()).then(d => setResearch(d.papers || [])).catch(() => {});
     fetchSessions();
   };
 
   useEffect(() => { boot(); }, []);
-  useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory, isTyping]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat, isTyping]);
 
   const saveSettings = async (e) => {
-    e.preventDefault();
-    setShowSettings(false);
+    e.preventDefault(); setShowSettings(false);
     try {
-      await fetch('http://localhost:8000/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userSettings)
-      });
+      await fetch('http://localhost:8000/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userSettings) });
       boot();
     } catch {}
   };
 
   const toggleListen = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert('Voice not supported.'); return; }
+    if (!SR) { alert('Voice unsupported.'); return; }
     if (isListening) { setIsListening(false); return; }
     const rec = new SR();
     rec.lang = userSettings.language === 'Hindi' ? 'hi-IN' : 'en-US';
-    setIsListening(true);
-    rec.start();
+    setIsListening(true); rec.start();
     rec.onresult = e => { setQuery(e.results[0][0].transcript); setIsListening(false); };
     rec.onerror = () => setIsListening(false);
   };
 
   const speak = (text) => {
-    if (!voiceEnabled || !window.speechSynthesis) return;
+    if (!voiceOn || !window.speechSynthesis) return;
     const u = new SpeechSynthesisUtterance(text.replace(/```[\s\S]*?```/g, 'code block'));
-    if (userSettings.language === 'Hindi') u.lang = 'hi-IN';
     window.speechSynthesis.speak(u);
   };
 
-  const send = async (override) => {
+  const sendMsg = async (override) => {
     const text = override || query;
     if (!text.trim()) return;
-    setChatHistory(h => [...h, { role: 'user', text }]);
-    setQuery('');
-    setIsTyping(true);
+    setChat(h => [...h, { role: 'user', text }]);
+    setQuery(''); setIsTyping(true);
     try {
       const r = await fetch('http://localhost:8000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, mode, session_id: sessionId })
       });
       const d = await r.json();
       if (d.session_id && d.session_id !== sessionId) setSessionId(d.session_id);
-      setChatHistory(h => [...h, { role: 'ai', text: d.reply }]);
-      speak(d.reply);
-      fetchSessions();
+      setChat(h => [...h, { role: 'ai', text: d.reply }]);
+      speak(d.reply); fetchSessions();
     } catch {
-      setChatHistory(h => [...h, { role: 'ai', text: 'Connection disrupted. Please verify the backend is running.' }]);
+      setChat(h => [...h, { role: 'ai', text: 'Connection lost. Check backend.' }]);
     }
     setIsTyping(false);
   };
 
   return (
-    <div className="layout">
+    <div className="app">
 
-      {/* ── LEFT SIDEBAR ── */}
-      <aside className="sidebar-l">
-        <div className="sb-top">
-          <div className="logo">
-            साथी
-            <span className="logo-kana">saathi</span>
-          </div>
-
-          <div className="sb-controls" style={{ marginTop: 16 }}>
-            <button className="new-chat-btn" onClick={newChat}>
-              <Plus size={13}/> New chat
-            </button>
-            <button className="icon-btn" onClick={() => applyTheme(!isDark)} title="Toggle theme">
-              {isDark ? <Sun size={14}/> : <Moon size={14}/>}
-            </button>
-            <button className="icon-btn" onClick={() => setVoiceEnabled(v => !v)} title="Toggle voice"
-              style={{ color: voiceEnabled ? 'var(--accent)' : undefined }}>
-              {voiceEnabled ? <Volume2 size={14}/> : <VolumeX size={14}/>}
-            </button>
-            <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
-              <Settings size={14}/>
-            </button>
+      {/* ────────── LEFT SIDEBAR ────────── */}
+      <aside className="sb-left">
+        <div className="sb-logo-area">
+          <div className="sb-logo-main">
+            साथी <span className="sb-logo-sub">(saathi)</span>
           </div>
         </div>
 
-        <div className="sb-sessions">
-          <span className="sb-section-title">History</span>
-          {sessions.length === 0
-            ? <p style={{ fontSize: 11, color: 'var(--dust)', padding: '4px 8px', fontStyle: 'italic' }}>
-                No sessions yet.
-              </p>
-            : sessions.map(s => (
-              <button
-                key={s.session_id}
-                className={`session-item ${sessionId === s.session_id ? 'active' : ''}`}
-                onClick={() => loadSession(s.session_id)}
+        <nav className="sb-nav">
+          <button className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
+            <Home size={15}/> Home
+          </button>
+          <button className="nav-item" onClick={newChat}>
+            <MessageSquarePlus size={15}/> New Chat
+          </button>
+          <button className={`nav-item ${view === 'history' ? 'active' : ''}`} onClick={() => setView('history')}>
+            <History size={15}/> History
+          </button>
+
+          {/* Session list when history view */}
+          <AnimatePresence>
+            {view === 'history' && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                style={{ overflow: 'hidden' }}
               >
-                <AlignLeft size={11} style={{ flexShrink: 0, opacity: 0.4 }}/>
-                <span>{s.title || 'Session'}</span>
-              </button>
-            ))
-          }
+                <div className="sb-session-list">
+                  {sessions.length === 0
+                    ? <span className="s-section-label" style={{ color: 'var(--mist)', fontStyle: 'italic', fontWeight: 300 }}>No history yet.</span>
+                    : sessions.map(s => (
+                      <button key={s.session_id} className={`s-item ${sessionId === s.session_id ? 's-active' : ''}`} onClick={() => loadSession(s.session_id)}>
+                        <span>{s.title || 'Session'}</span>
+                      </button>
+                    ))
+                  }
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </nav>
+
+        <div className="sb-bottom">
+          <button className="nav-item" onClick={() => setShowSettings(true)}>
+            <Settings size={15}/> Settings
+          </button>
         </div>
       </aside>
 
-      {/* ── CENTER CHAT ── */}
-      <main className="chat-main">
+      {/* ────────── CENTER CHAT ────────── */}
+      <main className="chat-col">
 
-        {/* Top bar with mode switcher */}
+        {/* Top bar */}
         <div className="chat-topbar">
-          <div className="mode-pill">
-            {['chat', 'agent', 'search'].map(m => (
-              <button
-                key={m}
-                className={`mode-opt ${mode === m ? 'active' : ''}`}
-                onClick={() => setMode(m)}
-              >
+          <button className="theme-btn" onClick={() => applyDark(!isDark)}>
+            {isDark ? <Sun size={16}/> : <Moon size={16}/>}
+          </button>
+          <button className="theme-btn" onClick={() => setVoiceOn(v => !v)} style={{ color: voiceOn ? 'var(--accent)' : undefined }}>
+            {voiceOn ? <Volume2 size={16}/> : <VolumeX size={16}/>}
+          </button>
+          <div className="mode-pills">
+            {['chat','agent','search'].map(m => (
+              <button key={m} className={`mode-pill ${mode === m ? 'mp-on' : ''}`} onClick={() => setMode(m)}>
                 {m === 'chat' ? 'Chat' : m === 'agent' ? 'Agent' : 'Search'}
               </button>
             ))}
@@ -240,157 +221,175 @@ export default function Dashboard() {
         </div>
 
         {/* Messages */}
-        <div className="messages">
-          <AnimatePresence>
-            {chatHistory.map((msg, i) => (
-              <motion.div
-                key={i}
-                className={`msg-row ${msg.role}`}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-              >
-                {msg.role === 'ai'
-                  ? <div className="bubble-ai"><FormattedMessage text={msg.text}/></div>
-                  : <div className="bubble-user">{msg.text}</div>
-                }
-              </motion.div>
-            ))}
-          </AnimatePresence>
+        <div className="messages-area">
+          {/* Watercolor crane */}
+          <div className="crane-bg"/>
 
-          {isTyping && (
-            <motion.div className="typing-row" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <div className="bubble-ai" style={{ paddingTop: 8 }}>
-                <div className="typing"><span/><span/><span/></div>
-              </div>
-            </motion.div>
-          )}
-          <div ref={messagesEnd}/>
+          <div className="messages-inner">
+            <AnimatePresence>
+              {chat.map((msg, i) => (
+                <motion.div key={i} className={`msg-row ${msg.role}`}
+                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.28, ease: [0.4,0,0.2,1] }}
+                >
+                  {msg.role === 'ai' ? (
+                    <div className="bubble-ai">
+                      <div className="ai-sender">SAATHI</div>
+                      <Msg text={msg.text}/>
+                    </div>
+                  ) : (
+                    <div className="bubble-user">{msg.text}</div>
+                  )}
+                </motion.div>
+              ))}
+            </AnimatePresence>
+
+            {isTyping && (
+              <motion.div className="msg-row ai" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                <div className="bubble-ai">
+                  <div className="ai-sender">SAATHI</div>
+                  <div className="typing"><span/><span/><span/></div>
+                </div>
+              </motion.div>
+            )}
+            <div ref={endRef}/>
+          </div>
         </div>
 
         {/* Input Dock */}
         <div className="input-dock">
-          <div className="input-wrap">
+          <div className="input-bar">
             <input
-              className="chat-input"
-              autoFocus
-              type="text"
-              value={query}
+              className="chat-input" autoFocus
+              type="text" value={query}
               onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && send()}
-              placeholder={
-                mode === 'agent'  ? 'Describe what to automate…' :
-                mode === 'search' ? 'Search the live web…' :
-                'Message Saathi…'
-              }
+              onKeyDown={e => e.key === 'Enter' && sendMsg()}
+              placeholder={mode === 'agent' ? 'Automate something…' : mode === 'search' ? 'Search the live web…' : 'Message Saathi…'}
             />
-            <button
-              className={`voice-btn ${isListening ? 'listening' : ''}`}
-              onClick={toggleListen}
-            >
-              {isListening ? <Mic size={15}/> : <MicOff size={15}/>}
+            <button className={`voice-btn ${isListening ? 'on' : ''}`} onClick={toggleListen}>
+              {isListening ? <Mic size={16}/> : <Mic size={16} style={{ opacity: 0.5 }}/>}
             </button>
-            <button
-              className="send-btn"
-              onClick={() => send()}
-              disabled={!query.trim()}
-            >
-              <Send size={15}/>
+            <button className="send-btn-circle" onClick={() => sendMsg()} disabled={!query.trim()}>
+              <Send size={14}/>
             </button>
           </div>
-          <p style={{
-            textAlign: 'center', marginTop: 12,
-            fontSize: 10, color: 'var(--dust)', letterSpacing: '0.08em'
-          }}>
-            mode: {mode} · {userSettings.name}
-          </p>
+          <p className="dock-meta">mode: {mode} | {userSettings.name}</p>
         </div>
       </main>
 
-      {/* ── RIGHT PANEL ── */}
-      <aside className="sidebar-r">
-
-        {/* Schedule */}
-        <div className="panel-section">
-          <p className="panel-heading"><Calendar size={10}/> Schedule</p>
-          {events.length === 0
-            ? <p style={{ fontSize: 11, color: 'var(--dust)', fontStyle: 'italic' }}>Syncing…</p>
-            : events.map(ev => (
-              <div className="p-card" key={ev.id}>
-                <h4>{ev.title}</h4>
-                <p className="p-meta">
-                  <span className="p-dot"/>
-                  <Clock size={9}/> {ev.time}
-                </p>
-              </div>
-            ))
-          }
+      {/* ────────── RIGHT PANEL ────────── */}
+      <aside className="sb-right">
+        <div className="rp-header">
+          <h2>Context &amp; Insights</h2>
         </div>
 
-        {/* Research Radar */}
-        <div className="panel-section">
-          <p className="panel-heading">
-            <BookOpen size={10}/>
-            {(userSettings?.interests || 'research').split(' ').slice(0, 2).join(' ')} radar
-          </p>
-          {research.length === 0
-            ? <p style={{ fontSize: 11, color: 'var(--dust)', fontStyle: 'italic' }}>Scanning arXiv…</p>
-            : research.map((r, i) => (
-              <a href={r.link} target="_blank" rel="noreferrer" key={i} className="p-card">
-                <h4>{r.title}</h4>
-                <p className="p-meta">
-                  <span className="p-dot"/>
-                  arXiv · open access
-                </p>
-              </a>
-            ))
-          }
-        </div>
+        <div className="rp-scroll">
 
+          {/* Focus Flow */}
+          <div className="rp-section">
+            <div className="rp-section-hd">
+              Focus Flow
+              <button onClick={() => setFfOpen(v => !v)}>
+                <ChevronUp size={13} style={{ transform: ffOpen ? 'rotate(0)' : 'rotate(180deg)', transition: 'transform .2s' }}/>
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {ffOpen && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+                  {events.length === 0
+                    ? <div className="ff-tag"><span className="ff-tag-dot"/> Syncing…</div>
+                    : events.map(ev => (
+                      <div className="ff-tag" key={ev.id}>
+                        <span className="ff-tag-dot"/>
+                        <span>{ev.title}</span>
+                        <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--mist)' }}>{ev.time}</span>
+                      </div>
+                    ))
+                  }
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Insight Feed */}
+          <div className="rp-section">
+            <div className="rp-section-hd">
+              Insight Feed
+              <button onClick={() => setIfOpen(v => !v)}>
+                <ChevronUp size={13} style={{ transform: ifOpen ? 'rotate(0)' : 'rotate(180deg)', transition: 'transform .2s' }}/>
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {ifOpen && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
+                  {research.length === 0
+                    ? <div className="if-card" style={{ opacity: 0.5 }}>
+                        <div className="if-card-body"><h4>Scanning arXiv…</h4></div>
+                      </div>
+                    : research.map((r, i) => (
+                      <a href={r.link} target="_blank" rel="noreferrer" key={i} className="if-card">
+                        <div className="if-card-body">
+                          <h4>{r.title}</h4>
+                          <p className="if-meta">arXiv</p>
+                        </div>
+                        <div className="if-thumb">
+                          <span className="if-thumb-placeholder">{THUMBS[i % THUMBS.length]}</span>
+                        </div>
+                      </a>
+                    ))
+                  }
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+        </div>
       </aside>
 
-      {/* ── SETTINGS MODAL ── */}
+      {/* ────────── SETTINGS MODAL ────────── */}
       <AnimatePresence>
         {showSettings && (
-          <motion.div
-            className="modal-overlay"
+          <motion.div className="modal-ov"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             onClick={e => { if (e.target === e.currentTarget) setShowSettings(false); }}
           >
-            <motion.div
-              className="modal-panel"
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+            <motion.div className="modal-box"
+              initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 16 }}
+              transition={{ duration: 0.24 }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <h2>設定<br/><span style={{ fontFamily: 'DM Sans', fontSize: 13, fontWeight: 300, color: 'var(--stone)', letterSpacing: '0.06em' }}>preferences</span></h2>
-                <button className="icon-btn" onClick={() => setShowSettings(false)}><X size={15}/></button>
+              <div className="modal-row" style={{ marginBottom: 0 }}>
+                <h2>設定<br/><span style={{ fontFamily: 'DM Sans', fontSize: 12, fontWeight: 300, color: 'var(--stone)', letterSpacing: '.06em' }}>preferences</span></h2>
+                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--stone)', padding: 6, borderRadius: 6 }} onClick={() => setShowSettings(false)}><X size={16}/></button>
               </div>
-
               <form onSubmit={saveSettings} style={{ marginTop: 28 }}>
-                <div className="form-group">
-                  <label className="form-label">Your name</label>
-                  <input className="form-field" type="text" value={userSettings.name}
+                <div className="form-grp">
+                  <label className="form-lbl">Your name</label>
+                  <input className="form-fld" type="text" value={userSettings.name}
                     onChange={e => setUserSettings(s => ({ ...s, name: e.target.value }))}/>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Research field</label>
-                  <input className="form-field" type="text" value={userSettings.interests}
+                <div className="form-grp">
+                  <label className="form-lbl">Research field</label>
+                  <input className="form-fld" type="text" value={userSettings.interests}
                     onChange={e => setUserSettings(s => ({ ...s, interests: e.target.value }))}/>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Reply language</label>
-                  <select className="form-field" value={userSettings.language}
+                <div className="form-grp">
+                  <label className="form-lbl">Reply language</label>
+                  <select className="form-fld" value={userSettings.language}
                     onChange={e => setUserSettings(s => ({ ...s, language: e.target.value }))}>
-                    <option>English</option>
-                    <option>Hindi</option>
-                    <option>Japanese</option>
-                    <option>French</option>
+                    <option>English</option><option>Hindi</option><option>Japanese</option><option>French</option>
                   </select>
                 </div>
-                <button type="submit" className="save-btn">Save changes</button>
+                <div className="form-grp">
+                  <label className="form-lbl">Theme</label>
+                  <select className="form-fld" value={userSettings.theme}
+                    onChange={e => { setUserSettings(s => ({...s, theme: e.target.value})); applyDark(e.target.value === 'dark'); }}>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                </div>
+                <button type="submit" className="save-cta">Save changes</button>
               </form>
             </motion.div>
           </motion.div>
