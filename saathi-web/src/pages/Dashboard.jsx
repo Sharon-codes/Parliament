@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, Clock, Calendar, Settings, Sparkles, BookOpen, Mic, MicOff, Volume2, VolumeX, Search, Code, MessageCircle, X, Loader2, Moon, Sun, Plus, AlignLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
@@ -200,7 +199,6 @@ const Dashboard = () => {
                   <div className={`max-w-[85%] text-[15px] leading-relaxed ${msg.role === 'user' ? 'chat-bubble-user px-5 py-3 rounded-2xl rounded-tr-sm' : 'chat-bubble-ai markdown-body'}`}>
                     {msg.role === 'ai' ? (
                       <ReactMarkdown 
-                        remarkPlugins={[remarkGfm]}
                         components={{
                           code({node, inline, className, children, ...props}) {
                             const match = /language-(\w+)/.exec(className || '')
@@ -302,7 +300,7 @@ const Dashboard = () => {
           </section>
 
           <section>
-             <h3 className="text-[11px] font-medium text-[var(--text-muted)] mb-3 flex items-center"><BookOpen size={13} className="mr-2" /> Focus: {userSettings.interests.split(" ")[0]}</h3>
+             <h3 className="text-[11px] font-medium text-[var(--text-muted)] mb-3 flex items-center"><BookOpen size={13} className="mr-2" /> Focus: {userSettings?.interests ? userSettings.interests.split(" ")[0] : 'Research'}</h3>
              <div className="space-y-3">
                {research.length === 0 ? <Loader2 size={14} className="animate-spin text-[var(--text-muted)] ml-2" /> : research.map((r, i) => (
                  <a href={r.link} target="_blank" rel="noreferrer" key={i} className="block card-minimal p-4 rounded-xl group hover:-translate-y-0.5">
