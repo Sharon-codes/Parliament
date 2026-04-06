@@ -77,7 +77,8 @@ def agentic_execute(task_command: str, llm_response: str = None):
     if llm_response:
         # If the LLM decided to create a file
         import re
-        code_blocks = re.findall(r'```python(.*?)```', llm_response, re.DOTALL)
+        # This robust regex ignores anything on the original ``` line (like 'markdown', 'python', etc.)
+        code_blocks = re.findall(r'```[^\n]*\n(.*?)```', llm_response, re.DOTALL)
         if code_blocks and ("open vs code" in task_lower or "visual studio code" in task_lower):
             filepath = write_code_to_file("generated_code.py", code_blocks[0].strip())
             results.append(launch_app_with_file("vs code", filepath))
