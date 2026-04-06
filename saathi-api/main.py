@@ -28,7 +28,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 class ChatRequest(BaseModel):
     message: str
-    require_web_search: bool = False
+    mode: str = "chat" # chat, agent, search
 
 class SettingsRequest(BaseModel):
     name: str = None
@@ -53,21 +53,24 @@ async def chat_with_saathi(req: ChatRequest):
     language = settings.get("language", "English")
     
     context = ""
-    if req.require_web_search:
+    # Explicit search mode overriding keyword match
+    if req.mode == "search":
         try:
             search_results = search_web(req.message)
             context += f"Here are live internet results to answer the user: {search_results}\n"
         except Exception as e:
             context += f"[Live search failed: {e}]\n"
 
-    try:
-        active_app = get_active_window_context()
-        clipboard_data = get_clipboard()
-        context += f"SYSTEM CONTEXT: The user is currently looking at window '{active_app}'. Current clipboard text: '{clipboard_data[:200]}...'\n"
-    except:
-        pass
+    # Module 13: Automatic system context gathering
+    if req.mode == "agent":
+        try:
+            active_app = get_active_window_context()
+            clipboard_data = get_clipboard()
+            context += f"SYSTEM CONTEXT: The user is currently looking at window '{active_app}'. Current clipboard text: '{clipboard_data[:200]}...'\n"
+        except:
+            pass
         
-    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You have deep system integration (Module 11 & 13 active). The user's name is {user_name}. You must answer in {language}. If you are asked to write code and open an editor, write the code in standard markdown blocks so the background system can exact it. Be friendly, calm, and insightful."
+    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You have deep system integration (Module 11 & 13 active). The user's name is {user_name}. You must answer in {language}. If you are asked to write code and run/open an editor, write the code in standard markdown blocks so the background system can exact it. Be friendly, calm, and insightful."
     
     full_prompt = f"System: {system_prompt}\nContext: {context}\nUser: {req.message}\nSaathi:"
     
@@ -86,9 +89,8 @@ async def chat_with_saathi(req: ChatRequest):
                 ai_reply = data.get("response", "").strip()
                 
                 # Module 11/13: Post-Generation Agent Execution
-                sys_action_result = agentic_execute(req.message, llm_response=ai_reply)
+                sys_action_result = agentic_execute(req.message, llm_response=ai_reply, mode=req.mode)
                 
-                # We can append confirmation if a physical action was successfully completed via code regex
                 if sys_action_result and "no immediate desktop tools" not in sys_action_result:
                     ai_reply += f"\n\n*(System Note: {sys_action_result})*"
                 
