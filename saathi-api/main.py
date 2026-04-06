@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 # Local imports
 from scrapers import search_web, get_latest_arxiv
 from database import init_db, get_settings, update_settings
+from system_agent import get_active_window_context, get_clipboard, agentic_execute
 
 # Initialize the db on startup
 init_db()
@@ -56,11 +57,24 @@ async def chat_with_saathi(req: ChatRequest):
     if req.require_web_search:
         try:
             search_results = search_web(req.message)
-            context = f"Here are live internet results to answer the user: {search_results}"
+            context += f"Here are live internet results to answer the user: {search_results}\n"
         except Exception as e:
-            context = f"[Live search failed: {e}]"
-    
-    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You are a peaceful and highly intelligent assistant. The user's name is {user_name}. YOU MUST REPLY EXCLUSIVELY IN THIS LANGUAGE: {language}. Be friendly, calm, and insightful."
+            context += f"[Live search failed: {e}]\n"
+
+    # Module 13: Automatic system context gathering
+    try:
+        active_app = get_active_window_context()
+        clipboard_data = get_clipboard()
+        context += f"SYSTEM CONTEXT: The user is currently looking at window '{active_app}'. Current clipboard text: '{clipboard_data[:200]}...'\n"
+    except:
+        pass
+        
+    # Module 11: Task Agent execution mapping
+    sys_action_result = agentic_execute(req.message)
+    if sys_action_result and "no immediate desktop tools" not in sys_action_result:
+         context += f"SYSTEM ACTION TAKEN: {sys_action_result}\n"
+
+    system_prompt = f"You are Saathi, an elegant, serene personal AI companion. You have deep system integration (Module 11 & 13 active). The user's name is {user_name}. You must answer in {language}. If you took a system action, mention it. Be friendly, calm, and insightful."
     
     full_prompt = f"System: {system_prompt}\nContext: {context}\nUser: {req.message}\nSaathi:"
     
