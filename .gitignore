@@ -2,13 +2,23 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
 saathi.db
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Node / React
 saathi-web/node_modules/
 saathi-web/dist/
+saathi-remote/node_modules/
 .DS_Store
 
 # Secrets
 .env
 saathi_extracted.txt
+.saathi_pin_raw
+.saathi_pin_hash
+
+# Whisper model cache
+~/.cache/whisper/

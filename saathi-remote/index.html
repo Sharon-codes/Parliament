@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <meta name="theme-color" content="#0E0C0A"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Saathi"/>
+  <link rel="manifest" href="manifest.json"/>
+  <title>Saathi — Mobile</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet"/>
+  <!-- QR scanner -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+  /* ── TOKENS ── */
+  :root {
+    --bg:      #0E0C0A;
+    --surf:    #181512;
+    --card:    #201D1A;
+    --border:  #2C2824;
+    --ink:     #EDE7DD;
+    --stone:   #8A8076;
+    --mist:    #3E3A36;
+    --accent:  #7A9E78;
+    --ah:      #9BBF99;
+    --gold:    #C4A05A;
+    --danger:  #B84040;
+    --r:       14px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bot: env(safe-area-inset-bottom, 0px);
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: 'DM Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; overscroll-behavior: none; }
+
+  /* ── SCREENS ── */
+  #app { height: 100dvh; display: flex; flex-direction: column; position: relative; overflow: hidden; }
+  .screen { position: absolute; inset: 0; display: flex; flex-direction: column; transition: opacity .25s, transform .25s; }
+  .screen.off { opacity: 0; pointer-events: none; transform: translateY(14px); }
+  .screen.on  { opacity: 1; pointer-events: all; transform: translateY(0); }
+
+  /* ── SPINNER ── */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 22px; height: 22px; border: 2px solid var(--mist); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+
+  /* ── CONNECT SCREEN ── */
+  #s-connect {
+    align-items: center; justify-content: flex-start;
+    padding: calc(var(--safe-top) + 28px) 28px 28px;
+    overflow-y: auto;
+    gap: 0;
+    background: var(--bg);
+  }
+
+  .logo { font-family: 'Cormorant Garamond', serif; font-size: 46px; font-weight: 300; color: var(--ink); line-height: 1; margin-bottom: 4px; }
+  .logo-sub { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--stone); margin-bottom: 36px; display: block; }
+
+  /* QR area */
+  #qr-scanner-wrap { width: 100%; max-width: 320px; border-radius: 18px; overflow: hidden; border: 1px solid var(--border); margin-bottom: 20px; background: var(--surf); min-height: 230px; display: flex; align-items: center; justify-content: center; }
+  #qr-reader { width: 100%; }
+  .qr-hint { font-size: 11px; color: var(--stone); text-align: center; margin-bottom: 24px; line-height: 1.6; }
+  .qr-hint a { color: var(--accent); text-decoration: none; cursor: pointer; }
+
+  /* Divider */
+  .divider { display: flex; align-items: center; gap: 12px; width: 100%; margin: 4px 0 20px; }
+  .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .divider span { font-size: 10px; color: var(--stone); letter-spacing: .12em; text-transform: uppercase; }
+
+  /* Manual form */
+  .form-wrap { width: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .flabel { font-size: 9px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--stone); display: block; margin-bottom: 6px; }
+  .finput {
+    width: 100%; background: var(--surf); border: 1px solid var(--border);
+    border-radius: var(--r); padding: 13px 16px; font-size: 15px;
+    font-family: inherit; color: var(--ink); outline: none;
+    transition: border-color .15s; appearance: none;
+  }
+  .finput:focus { border-color: var(--accent); }
+  .finput::placeholder { color: var(--mist); }
+
+  /* PIN digits */
+  .pin-row { display: flex; gap: 10px; justify-content: center; }
+  .pin-d { width: 54px; height: 60px; background: var(--surf); border: 1px solid var(--border); border-radius: var(--r); font-size: 26px; font-family: inherit; color: var(--ink); text-align: center; outline: none; appearance: none; transition: border-color .15s; }
+  .pin-d:focus { border-color: var(--accent); }
+
+  .btn { width: 100%; padding: 15px; border: none; border-radius: var(--r); font-size: 14px; font-weight: 500; font-family: inherit; cursor: pointer; transition: all .15s; letter-spacing: .03em; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:active { background: var(--ah); transform: scale(.98); }
+  .btn-ghost { background: var(--surf); color: var(--stone); border: 1px solid var(--border); }
+  .btn-ghost:active { background: var(--card); }
+
+  .status-msg { font-size: 12px; color: var(--stone); text-align: center; min-height: 18px; margin-top: 4px; }
+  .clr-ok   { color: #6ec66e; }
+  .clr-fail { color: var(--danger); }
+
+  /* ── MAIN APP SCREEN ── */
+  #s-main { background: var(--bg); }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: calc(var(--safe-top) + 12px) 16px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surf);
+    flex-shrink: 0;
+  }
+  .tb-logo { font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 300; }
+  .tb-name { flex: 1; font-size: 11px; color: var(--accent); letter-spacing: .05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tb-dot { width: 8px; height: 8px; border-radius: 50%; background: #6ec66e; box-shadow: 0 0 5px #6ec66e; flex-shrink: 0; }
+  .tb-dot.off { background: var(--mist); box-shadow: none; }
+  .tb-btn { background: none; border: none; cursor: pointer; color: var(--stone); padding: 6px; border-radius: 8px; display: flex; align-items: center; font-size: 18px; transition: color .15s; }
+  .tb-btn:active { color: var(--ink); }
+
+  /* Mode tabs */
+  .mode-tabs { display: flex; background: var(--surf); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .mtab { flex: 1; padding: 10px 4px; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: var(--stone); border: none; background: none; cursor: pointer; font-family: inherit; transition: color .15s; border-bottom: 2px solid transparent; }
+  .mtab.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* Chat messages */
+  .chat-box { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 12px; }
+  .bubble { max-width: 84%; padding: 11px 14px; border-radius: 16px; font-size: 14px; line-height: 1.65; animation: fadein .2s ease; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(6px); } }
+  .bubble.ai { background: var(--surf); border: 1px solid var(--border); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .bubble.user { background: var(--accent); color: #fff; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .bubble.sys { background: none; color: var(--stone); font-size: 11px; text-align: center; align-self: center; font-style: italic; }
+  .bubble-sender { font-size: 9px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; display: block; }
+  .thinking-dots span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--stone); margin: 0 2px; animation: dot .8s infinite; }
+  .thinking-dots span:nth-child(2) { animation-delay: .15s; }
+  .thinking-dots span:nth-child(3) { animation-delay: .3s; }
+  @keyframes dot { 0%,80%,100% { transform: scale(.7); opacity: .4; } 40% { transform: scale(1); opacity: 1; } }
+
+  /* Nudge cards */
+  .nudge-card { background: linear-gradient(135deg, rgba(196,160,90,.12), rgba(122,158,120,.08)); border: 1px solid rgba(196,160,90,.3); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+  .nudge-title { font-size: 12px; font-weight: 500; color: var(--gold); margin-bottom: 4px; }
+  .nudge-body { font-size: 12.5px; line-height: 1.6; color: var(--ink); }
+  .nudge-ack { font-size: 10px; color: var(--accent); cursor: pointer; margin-top: 6px; display: inline-block; text-decoration: none; border: none; background: none; font-family: inherit; }
+
+  /* Input dock */
+  .dock {
+    padding: 10px 14px calc(var(--safe-bot) + 12px);
+    border-top: 1px solid var(--border);
+    background: var(--bg); flex-shrink: 0;
+  }
+  .dock-row { display: flex; gap: 8px; align-items: flex-end; }
+  .msg-input { flex: 1; background: var(--surf); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; font-size: 14px; font-family: inherit; color: var(--ink); outline: none; resize: none; max-height: 120px; transition: border-color .15s; line-height: 1.5; }
+  .msg-input:focus { border-color: var(--accent); }
+  .msg-input::placeholder { color: var(--mist); }
+  .icon-btn { width: 46px; height: 46px; border-radius: 13px; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 20px; flex-shrink: 0; transition: all .15s; }
+  .icon-btn.send { background: var(--accent); }
+  .icon-btn.send:active { background: var(--ah); transform: scale(.96); }
+  .icon-btn.mic { background: var(--surf); border: 1px solid var(--border); }
+  .icon-btn.mic.rec { background: var(--danger); border-color: var(--danger); animation: pulse .9s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+
+  /* Nudges tab */
+  .nudges-tab { padding: 16px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Quick actions tab */
+  .qa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 16px; overflow-y: auto; }
+  .qa-card { background: var(--surf); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 12px; cursor: pointer; text-align: left; transition: background .15s, transform .1s; display: flex; flex-direction: column; gap: 6px; }
+  .qa-card:active { transform: scale(.96); background: var(--card); }
+  .qa-icon { font-size: 26px; line-height: 1; }
+  .qa-label { font-size: 12.5px; font-weight: 500; }
+  .qa-desc { font-size: 10px; color: var(--stone); line-height: 1.4; }
+
+  /* Profile tab */
+  .profile-tab { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+  .profile-heading { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 300; }
+  .info-row { background: var(--surf); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; }
+  .info-label { font-size: 10px; color: var(--stone); font-weight: 600; letter-spacing: .1em; text-transform: uppercase; margin-bottom: 3px; }
+  .info-val { font-size: 14px; }
+  .pin-change-btn { background: none; border: 1px solid var(--border); color: var(--stone); font-family: inherit; font-size: 12px; padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+  .pin-change-btn:active { background: var(--card); }
+  .disconnect-btn { background: rgba(184,64,64,.1); border: 1px solid rgba(184,64,64,.3); color: var(--danger); font-family: inherit; font-size: 13px; padding: 13px; border-radius: var(--r); cursor: pointer; width: 100%; font-weight: 500; letter-spacing: .03em; transition: all .15s; }
+  .disconnect-btn:active { background: rgba(184,64,64,.2); }
+
+  /* Tab content visibility */
+  .tcontent { display: none; flex: 1; overflow-y: auto; flex-direction: column; }
+  .tcontent.visible { display: flex; }
+
+  /* Hidden */
+  .hidden { display: none !important; }
+
+  /* Markdown-ish formatting */
+  .bubble p { margin: 0; }
+  .bubble code { font-family: monospace; font-size: 12px; background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; }
+  .bubble strong { font-weight: 600; }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 2px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* bottom sheet */
+  .sheet-ov { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.6); backdrop-filter: blur(8px); display: flex; align-items: flex-end; }
+  .sheet-ov.hidden { display: none; }
+  .sheet { width: 100%; background: var(--surf); border-radius: 20px 20px 0 0; border-top: 1px solid var(--border); padding: 20px 20px calc(var(--safe-bot) + 24px); max-height: 65vh; overflow-y: auto; }
+  .sheet-handle { width: 36px; height: 4px; background: var(--mist); border-radius: 2px; margin: 0 auto 18px; }
+  .sheet-title { font-size: 16px; font-weight: 500; margin-bottom: 16px; }
+  .sheet-input { width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 14px; font-family: inherit; color: var(--ink); outline: none; margin-bottom: 12px; }
+  .sheet-input:focus { border-color: var(--accent); }
+  .sheet-btn { width: 100%; padding: 13px; border-radius: 10px; border: none; font-size: 14px; font-weight: 500; font-family: inherit; cursor: pointer; margin-bottom: 8px; transition: all .15s; }
+  .sheet-btn.primary { background: var(--accent); color: #fff; }
+  .sheet-btn.ghost { background: var(--card); color: var(--stone); border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+<div id="app">
+
+<!-- ══════════ CONNECT SCREEN ══════════ -->
+<div id="s-connect" class="screen on">
+  <div class="logo">साथी</div>
+  <span class="logo-sub">Mobile Companion</span>
+
+  <!-- QR Scanner -->
+  <div id="qr-scanner-wrap">
+    <div id="qr-reader"></div>
+  </div>
+  <p class="qr-hint">
+    Point your camera at the QR code on the Saathi dashboard.<br/>
+    <a onclick="showManual()" id="manual-toggle">Or enter details manually ↓</a>
+  </p>
+
+  <!-- Manual form (hidden by default) -->
+  <div class="form-wrap hidden" id="manual-form">
+    <div>
+      <label class="flabel">Laptop URL <span style="color:var(--mist);font-weight:400">(http or https)</span></label>
+      <input id="man-url" class="finput" type="url" placeholder="https://xxx.trycloudflare.com" autocomplete="off" autocapitalize="off"/>
+    </div>
+    <div>
+      <label class="flabel">PIN</label>
+      <div class="pin-row" id="pin-row">
+        <input class="pin-d" id="p0" type="password" maxlength="1" inputmode="numeric" autocomplete="off"/>
+        <input class="pin-d" id="p1" type="password" maxlength="1" inputmode="numeric" autocomplete="off"/>
+        <input class="pin-d" id="p2" type="password" maxlength="1" inputmode="numeric" autocomplete="off"/>
+        <input class="pin-d" id="p3" type="password" maxlength="1" inputmode="numeric" autocomplete="off"/>
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="connectManual()">Connect</button>
+  </div>
+
+  <div class="status-msg" id="conn-status">Scan the QR code on your Saathi dashboard.</div>
+</div>
+
+<!-- ══════════ MAIN APP SCREEN ══════════ -->
+<div id="s-main" class="screen off">
+  <!-- Top bar -->
+  <div class="topbar">
+    <span class="tb-logo">साथी</span>
+    <span class="tb-name" id="tb-name">Connecting…</span>
+    <div class="tb-dot off" id="tb-dot"></div>
+    <button class="tb-btn" onclick="openNudgeSheet()" title="Nudges">🔔</button>
+    <button class="tb-btn" onclick="switchTab('profile')" title="Profile">◯</button>
+  </div>
+
+  <!-- Mode tabs -->
+  <div class="mode-tabs">
+    <button class="mtab on" id="mt-chat"    onclick="switchTab('chat')">Chat</button>
+    <button class="mtab"    id="mt-actions" onclick="switchTab('actions')">Quick</button>
+    <button class="mtab"    id="mt-nudges"  onclick="switchTab('nudges')">Nudges</button>
+    <button class="mtab"    id="mt-profile" onclick="switchTab('profile')">You</button>
+  </div>
+
+  <!-- ── CHAT TAB ── -->
+  <div class="tcontent visible" id="tc-chat" style="flex-direction:column">
+    <div class="chat-box" id="chat-box">
+      <div class="bubble ai">
+        <span class="bubble-sender">SAATHI</span>
+        Connected to your laptop. What's on your mind?
+      </div>
+    </div>
+    <div class="dock">
+      <div class="dock-row">
+        <textarea id="msg-input" class="msg-input" placeholder="Message Saathi…" rows="1"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg();}"
+          oninput="autoResize(this)"></textarea>
+        <button class="icon-btn mic" id="mic-btn" onclick="toggleMic()">🎤</button>
+        <button class="icon-btn send" onclick="sendMsg()">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── QUICK ACTIONS TAB ── -->
+  <div class="tcontent" id="tc-actions">
+    <div class="qa-grid">
+      <div class="qa-card" onclick="runAction('What do I have due tomorrow?')">
+        <div class="qa-icon">📅</div>
+        <div class="qa-label">Deadlines</div>
+        <div class="qa-desc">What's due tomorrow</div>
+      </div>
+      <div class="qa-card" onclick="runAction('Give me a quick summary of what we talked about this week')">
+        <div class="qa-icon">🧠</div>
+        <div class="qa-label">Memory recap</div>
+        <div class="qa-desc">This week's highlights</div>
+      </div>
+      <div class="qa-card" onclick="runAction('Start a 25 minute pomodoro timer')">
+        <div class="qa-icon">🍅</div>
+        <div class="qa-label">Pomodoro</div>
+        <div class="qa-desc">25-min focus timer</div>
+      </div>
+      <div class="qa-card" onclick="runAction('What papers were published this week in my field?')">
+        <div class="qa-icon">📡</div>
+        <div class="qa-label">Research</div>
+        <div class="qa-desc">Latest in your field</div>
+      </div>
+      <div class="qa-card" onclick="runAction('Help me draft a quick email')">
+        <div class="qa-icon">✉️</div>
+        <div class="qa-label">Draft Email</div>
+        <div class="qa-desc">Compose with Saathi</div>
+      </div>
+      <div class="qa-card" onclick="runAction('What should I focus on right now?')">
+        <div class="qa-icon">🎯</div>
+        <div class="qa-label">Focus</div>
+        <div class="qa-desc">What to work on now</div>
+      </div>
+      <div class="qa-card" onclick="runAction('I am feeling stressed and overwhelmed')">
+        <div class="qa-icon">💛</div>
+        <div class="qa-label">Check In</div>
+        <div class="qa-desc">Talk about how you feel</div>
+      </div>
+      <div class="qa-card" onclick="runAction('Summarize my research progress')">
+        <div class="qa-icon">📊</div>
+        <div class="qa-label">Progress</div>
+        <div class="qa-desc">Research summary</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── NUDGES TAB ── -->
+  <div class="tcontent" id="tc-nudges">
+    <div class="nudges-tab" id="nudges-list">
+      <p style="color:var(--stone);font-size:13px;text-align:center;padding:40px 20px">No active nudges. Saathi is watching quietly.</p>
+    </div>
+  </div>
+
+  <!-- ── PROFILE TAB ── -->
+  <div class="tcontent" id="tc-profile">
+    <div class="profile-tab">
+      <div class="profile-heading" id="profile-name">Loading…</div>
+      <div class="info-row">
+        <div>
+          <div class="info-label">Connection</div>
+          <div class="info-val" id="prof-conn">—</div>
+        </div>
+        <div class="tb-dot off" id="prof-dot"></div>
+      </div>
+      <div class="info-row">
+        <div>
+          <div class="info-label">Tunnel type</div>
+          <div class="info-val" id="prof-tunnel">—</div>
+        </div>
+      </div>
+      <div class="info-row" style="justify-content:space-between;align-items:center">
+        <div>
+          <div class="info-label">PIN</div>
+          <div class="info-val">••••</div>
+        </div>
+        <button class="pin-change-btn" onclick="openPinSheet()">Change</button>
+      </div>
+      <button class="disconnect-btn" onclick="disconnect()">⏻ Disconnect & go back</button>
+    </div>
+  </div>
+</div>
+
+</div><!-- /app -->
+
+<!-- ── PIN CHANGE SHEET ── -->
+<div class="sheet-ov hidden" id="pin-sheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Change PIN</div>
+    <input class="sheet-input" id="new-pin-input" type="password" inputmode="numeric" placeholder="New PIN (min 4 digits)" maxlength="8"/>
+    <button class="sheet-btn primary" onclick="changePin()">Update PIN</button>
+    <button class="sheet-btn ghost" onclick="closeSheet('pin-sheet')">Cancel</button>
+  </div>
+</div>
+
+<!-- ── NUDGE SHEET ── -->
+<div class="sheet-ov hidden" id="nudge-sheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">🔔 Nudges</div>
+    <div id="nudge-sheet-list"></div>
+    <button class="sheet-btn ghost" onclick="closeSheet('nudge-sheet')">Close</button>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let ws       = null;
+let wsUrl    = '';
+let pin      = '';
+let userName = '';
+let tunnelType = '';
+let activeTab  = 'chat';
+let isRec      = false;
+let recognition = null;
+let pendingNudges = [];
+
+// ── Parse URL fragment params (set by QR code) ─────────────────────────────────
+function parseFragment() {
+  const frag = window.location.hash.slice(1);
+  if (!frag) return null;
+  const params = {};
+  frag.split('&').forEach(p => {
+    const [k, ...v] = p.split('=');
+    params[decodeURIComponent(k)] = decodeURIComponent(v.join('='));
+  });
+  return params;
+}
+
+// ── Auto-connect from QR ───────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  setupPinNav();
+
+  const p = parseFragment();
+  if (p && p.ws && p.pin) {
+    setStatus('QR detected — connecting…', '');
+    wsUrl = p.ws;
+    pin   = p.pin;
+    if (p.name) {
+      document.getElementById('tb-name').textContent = p.name + "'s Saathi";
+      userName = p.name;
+    }
+    connectWs();
+    return;
+  }
+
+  // No QR — start scanner
+  startQrScanner();
+});
+
+// ── QR Scanner ─────────────────────────────────────────────────────────────────
+let qrScanner = null;
+function startQrScanner() {
+  try {
+    qrScanner = new Html5Qrcode("qr-reader");
+    qrScanner.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 220, height: 220 } },
+      (decoded) => {
+        qrScanner.stop().catch(() => {});
+        handleQrResult(decoded);
+      },
+      () => {} // errors are normal during scan
+    ).catch(err => {
+      document.getElementById('qr-scanner-wrap').innerHTML = '<p style="color:var(--stone);font-size:12px;padding:20px;text-align:center">Camera access denied.<br/>Please use manual entry.</p>';
+      showManual();
+    });
+  } catch(e) {
+    showManual();
+  }
+}
+
+function handleQrResult(qrText) {
+  // QR encodes a URL with fragment — extract fragment params
+  try {
+    const fragIdx = qrText.indexOf('#');
+    if (fragIdx === -1) throw new Error('No fragment');
+    const frag = qrText.slice(fragIdx + 1);
+    const params = {};
+    frag.split('&').forEach(p => {
+      const [k, ...v] = p.split('=');
+      params[decodeURIComponent(k)] = decodeURIComponent(v.join('='));
+    });
+    if (params.ws && params.pin) {
+      wsUrl = params.ws;
+      pin   = params.pin;
+      if (params.name) { userName = params.name; document.getElementById('tb-name').textContent = params.name + "'s Saathi"; }
+      setStatus('QR scanned ✓ — connecting…', '');
+      connectWs();
+      return;
+    }
+  } catch(e) {}
+  setStatus('Invalid QR code. Try manual entry.', 'clr-fail');
+}
+
+// ── Manual entry ──────────────────────────────────────────────────────────────
+function showManual() {
+  document.getElementById('manual-form').classList.remove('hidden');
+  document.getElementById('manual-toggle').style.display = 'none';
+}
+
+function connectManual() {
+  const rawUrl = document.getElementById('man-url').value.trim();
+  const p = ['p0','p1','p2','p3'].map(id => document.getElementById(id).value).join('');
+  if (!rawUrl || p.length < 4) {
+    setStatus('Fill in the URL and all 4 PIN digits.', 'clr-fail');
+    return;
+  }
+  // Convert http(s) URL to ws(s)
+  wsUrl = rawUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+  pin   = p;
+  connectWs();
+}
+
+// ── PIN nav ────────────────────────────────────────────────────────────────────
+function setupPinNav() {
+  ['p0','p1','p2','p3'].forEach((id, i, arr) => {
+    const el = document.getElementById(id);
+    el.addEventListener('input', () => { if (el.value && i < arr.length-1) document.getElementById(arr[i+1]).focus(); });
+    el.addEventListener('keydown', e => { if (e.key === 'Backspace' && !el.value && i > 0) document.getElementById(arr[i-1]).focus(); });
+  });
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWs() {
+  setStatus('Connecting…', '');
+  const endpoint = wsUrl.endsWith('/') ? wsUrl + 'ws/sync' : wsUrl + '/ws/sync';
+  ws = new WebSocket(endpoint);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'auth', pin }));
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    handleMsg(msg);
+  };
+
+  ws.onerror = () => {
+    setStatus('Connection failed. Check URL.', 'clr-fail');
+    setDotState(false);
+  };
+
+  ws.onclose = () => {
+    setDotState(false);
+    if (document.getElementById('s-main').classList.contains('on')) {
+      addBubble('sys', '⚠ Disconnected. Reconnecting in 5s…');
+      setTimeout(() => { if (!ws || ws.readyState !== WebSocket.OPEN) connectWs(); }, 5000);
+    }
+  };
+}
+
+function handleMsg(msg) {
+  switch(msg.type) {
+    case 'auth_ok':
+      if (msg.name) { userName = msg.name; document.getElementById('tb-name').textContent = msg.name + "'s Saathi"; document.getElementById('profile-name').textContent = msg.name; }
+      setDotState(true);
+      showMain();
+      addBubble('sys', '✓ Connected to your laptop.');
+      // Fetch nudges
+      ws.send(JSON.stringify({ type: 'nudges' }));
+      break;
+
+    case 'auth_failed':
+      setStatus('Wrong PIN. Try again.', 'clr-fail');
+      setDotState(false);
+      ws.close();
+      break;
+
+    case 'thinking':
+      showThinking();
+      break;
+
+    case 'reply':
+      hideThinking();
+      addBubble('ai', msg.text);
+      break;
+
+    case 'nudges':
+      pendingNudges = msg.data || [];
+      renderNudges();
+      updateNudgeBadge();
+      break;
+
+    case 'pong': break;
+
+    case 'error':
+      setStatus(msg.msg, 'clr-fail');
+      break;
+  }
+}
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+function setStatus(text, cls='') {
+  const el = document.getElementById('conn-status');
+  el.className = 'status-msg ' + cls;
+  el.textContent = text;
+}
+
+function setDotState(ok) {
+  ['tb-dot','prof-dot'].forEach(id => {
+    const el = document.getElementById(id);
+    el.className = 'tb-dot' + (ok ? '' : ' off');
+  });
+  document.getElementById('prof-conn').textContent = ok ? 'Connected' : 'Disconnected';
+  document.getElementById('prof-tunnel').textContent = tunnelType || '—';
+}
+
+function showMain() {
+  document.getElementById('s-connect').classList.remove('on');
+  document.getElementById('s-connect').classList.add('off');
+  document.getElementById('s-main').classList.remove('off');
+  document.getElementById('s-main').classList.add('on');
+}
+
+function switchTab(name) {
+  ['chat','actions','nudges','profile'].forEach(t => {
+    document.getElementById('tc-' + t)?.classList.toggle('visible', t === name);
+    document.getElementById('tc-' + t)?.classList.toggle('hidden', t !== name);
+    const mt = document.getElementById('mt-' + t);
+    if (mt) mt.classList.toggle('on', t === name);
+  });
+  activeTab = name;
+  if (name === 'nudges') renderNudges();
+}
+
+// Fix: visibility classes for tabs
+document.querySelectorAll('.tcontent').forEach(el => { if (!el.classList.contains('visible')) el.classList.add('hidden'); });
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────────
+let thinkingEl = null;
+function addBubble(role, text) {
+  const box = document.getElementById('chat-box');
+  const el = document.createElement('div');
+  el.className = 'bubble ' + role;
+  if (role === 'ai') {
+    const s = document.createElement('span');
+    s.className = 'bubble-sender'; s.textContent = 'SAATHI';
+    el.appendChild(s);
+  }
+  // Simple render: bold, code, italic
+  const body = document.createElement('div');
+  body.innerHTML = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br/>');
+  el.appendChild(body);
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+}
+
+function showThinking() {
+  const box = document.getElementById('chat-box');
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'bubble ai';
+  thinkingEl.innerHTML = '<span class="bubble-sender">SAATHI</span><div class="thinking-dots"><span></span><span></span><span></span></div>';
+  box.appendChild(thinkingEl);
+  box.scrollTop = box.scrollHeight;
+}
+
+function hideThinking() {
+  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+}
+
+function sendMsg() {
+  const inp = document.getElementById('msg-input');
+  const text = inp.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  addBubble('user', text);
+  ws.send(JSON.stringify({ type: 'chat', message: text, mode: activeTab === 'actions' ? 'agent' : 'chat' }));
+  inp.value = ''; inp.style.height = 'auto';
+  switchTab('chat');
+}
+
+function runAction(prompt) {
+  addBubble('user', prompt);
+  ws?.send(JSON.stringify({ type: 'chat', message: prompt }));
+  switchTab('chat');
+}
+
+// ── Mic / Voice ────────────────────────────────────────────────────────────────
+function toggleMic() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { addBubble('sys', 'Voice not supported in this browser.'); return; }
+  if (isRec) {
+    recognition?.stop(); isRec = false;
+    document.getElementById('mic-btn').className = 'icon-btn mic';
+    return;
+  }
+  recognition = new SR();
+  recognition.lang = 'en-US'; recognition.interimResults = false;
+  isRec = true; document.getElementById('mic-btn').className = 'icon-btn mic rec';
+  recognition.onresult = e => {
+    const t = e.results[0][0].transcript;
+    document.getElementById('msg-input').value = t;
+    autoResize(document.getElementById('msg-input'));
+    isRec = false; document.getElementById('mic-btn').className = 'icon-btn mic';
+    sendMsg();
+  };
+  recognition.onerror = recognition.onend = () => {
+    isRec = false; document.getElementById('mic-btn').className = 'icon-btn mic';
+  };
+  recognition.start();
+}
+
+// ── Nudges ─────────────────────────────────────────────────────────────────────
+function renderNudges() {
+  const icons = { time: '🕰', worry: '💛', progress: '📈', context: '📅' };
+
+  // Nudges tab
+  const list = document.getElementById('nudges-list');
+  if (!pendingNudges.length) {
+    list.innerHTML = '<p style="color:var(--stone);font-size:13px;text-align:center;padding:40px 20px">No active nudges. All clear ✓</p>';
+    return;
+  }
+  list.innerHTML = '';
+  pendingNudges.forEach(n => {
+    const el = document.createElement('div');
+    el.className = 'nudge-card';
+    el.innerHTML = `
+      <div class="nudge-title">${icons[n.nudge_type]||'✦'} ${n.nudge_type || 'nudge'}</div>
+      <div class="nudge-body">${n.message}</div>
+      <button class="nudge-ack" onclick="ackNudge(${n.id})">✓ Got it</button>
+    `;
+    list.appendChild(el);
+  });
+
+  // Also update sheet
+  renderNudgeSheet();
+}
+
+function renderNudgeSheet() {
+  const el = document.getElementById('nudge-sheet-list');
+  el.innerHTML = '';
+  pendingNudges.forEach(n => {
+    const card = document.createElement('div');
+    card.className = 'nudge-card'; card.style.marginBottom = '10px';
+    card.innerHTML = `<div class="nudge-body">${n.message}</div><button class="nudge-ack" onclick="ackNudge(${n.id});closeSheet('nudge-sheet')">✓ Done</button>`;
+    el.appendChild(card);
+  });
+  if (!pendingNudges.length) el.innerHTML = '<p style="color:var(--stone);font-size:13px;padding:10px 0">No nudges right now.</p>';
+}
+
+function updateNudgeBadge() {
+  // Could add a badge count overlay on the bell icon
+}
+
+function ackNudge(id) {
+  ws?.send(JSON.stringify({ type: 'ack_nudge', nudge_id: id }));
+  pendingNudges = pendingNudges.filter(n => n.id !== id);
+  renderNudges();
+}
+
+// ── Disconnect ─────────────────────────────────────────────────────────────────
+function disconnect() {
+  ws?.close(); ws = null;
+  document.getElementById('s-main').classList.remove('on'); document.getElementById('s-main').classList.add('off');
+  document.getElementById('s-connect').classList.remove('off'); document.getElementById('s-connect').classList.add('on');
+  setStatus('Disconnected. Scan QR again to reconnect.', '');
+  // Remove fragment so auto-connect doesn't trigger
+  history.replaceState(null, '', window.location.pathname);
+  startQrScanner();
+}
+
+// ── PIN change ─────────────────────────────────────────────────────────────────
+function openPinSheet() { document.getElementById('pin-sheet').classList.remove('hidden'); }
+function changePin() {
+  const newPin = document.getElementById('new-pin-input').value.trim();
+  if (!newPin || newPin.length < 4) { alert('PIN must be at least 4 digits'); return; }
+  // Update on desktop via HTTP
+  const httpUrl = wsUrl.replace('wss://', 'https://').replace('ws://', 'http://');
+  fetch(httpUrl + '/api/sync/pin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin: newPin })
+  }).then(r => r.json()).then(d => {
+    if (d.ok) { pin = newPin; closeSheet('pin-sheet'); addBubble('sys', '✓ PIN updated. You may need to re-scan the QR next time.'); }
+    else alert(d.error || 'Failed');
+  }).catch(() => alert('Could not reach laptop'));
+}
+
+// ── Sheets / Modals ────────────────────────────────────────────────────────────
+function openNudgeSheet() {
+  renderNudgeSheet();
+  document.getElementById('nudge-sheet').classList.remove('hidden');
+}
+function closeSheet(id) { document.getElementById(id).classList.add('hidden'); }
+document.querySelectorAll('.sheet-ov').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.add('hidden'); });
+});
+
+// ── PWA ────────────────────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

@@ -16,9 +16,15 @@ def init_db():
             interests TEXT,
             language TEXT,
             theme TEXT,
-            proactive_level TEXT
+            proactive_level TEXT,
+            nudge_sensitivity TEXT
         )
     ''')
+    # Migrate: add nudge_sensitivity if it doesn't exist yet
+    try:
+        c.execute("ALTER TABLE user_settings ADD COLUMN nudge_sensitivity TEXT")
+    except Exception:
+        pass
     
     c.execute('''
         CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -42,8 +48,8 @@ def init_db():
     c.execute("SELECT id FROM user_settings WHERE id = 1")
     if not c.fetchone():
         c.execute('''
-            INSERT INTO user_settings (id, name, role, interests, language, theme, proactive_level)
-            VALUES (1, 'Guest', 'Researcher', 'artificial intelligence', 'English', 'light', 'balanced')
+            INSERT INTO user_settings (id, name, role, interests, language, theme, proactive_level, nudge_sensitivity)
+            VALUES (1, 'Guest', 'Researcher', 'artificial intelligence', 'English', 'light', 'balanced', 'balanced')
         ''')
     conn.commit()
     conn.close()
@@ -61,7 +67,7 @@ def update_settings(data: dict):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     for key, value in data.items():
-        if key in ['name', 'role', 'interests', 'language', 'theme', 'proactive_level']:
+        if key in ['name', 'role', 'interests', 'language', 'theme', 'proactive_level', 'nudge_sensitivity']:
             c.execute(f"UPDATE user_settings SET {key} = ? WHERE id = 1", (value,))
     conn.commit()
     conn.close()
