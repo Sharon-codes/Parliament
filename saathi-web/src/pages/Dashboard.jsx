@@ -399,7 +399,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
         method: "POST",
         body: { 
           text: userMsg, 
-          mode: chatMode,
+          mode: activeProtocol?.name === "Pure Conversation" ? "conversational" : chatMode,
           doc_context: shouldAttachDocumentContext(userMsg, activeFile) ? { name: activeFile.name, content: activeFile.content } : null
         }
       });
@@ -413,6 +413,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
       }
       
       setMessages(prev => [...prev, res]);
+      setCurrentFile(null); // 🦾 v124.0: Clear attachment after success
     } finally {
       setSending(false);
     }

@@ -277,6 +277,9 @@ def _selected_tool_names(message: str, workspace_connected: bool) -> list[str]:
     return sorted(selected)
 
 
+# Removed the temporary local parser in favor of the core google_workspace implementation.
+
+
 async def _translate_to_google_doc(
     *,
     access_token: str,
@@ -285,6 +288,8 @@ async def _translate_to_google_doc(
     target_lang: str,
     blocks: Optional[list[dict]] = None,
 ) -> dict:
+    from google_workspace import translate_document_blocks, create_google_doc_from_blocks, create_google_doc_from_markdown
+    
     translated_blocks = None
     translated_text = ""
 
@@ -292,12 +297,11 @@ async def _translate_to_google_doc(
         translated_blocks = await translate_document_blocks(blocks, target_lang)
         translated_text = "\n".join((block.get("text") or "") for block in translated_blocks).strip()
     else:
-        translated_text = await translate_text_content(plain_text, target_lang)
+        # 🦾 v123.5: Use the specialized markdown handler
+        document = await create_google_doc_from_markdown(access_token, title, plain_text)
+        return {"document": document, "translated_text": plain_text}
 
-    if translated_blocks:
-        document = await create_google_doc_from_blocks(access_token, title, translated_blocks)
-    else:
-        document = await create_google_doc(access_token, title, translated_text)
+    document = await create_google_doc_from_blocks(access_token, title, translated_blocks)
 
     return {"document": document, "translated_text": translated_text}
 
@@ -573,7 +577,14 @@ async def session_chat(session_id: str, req: ChatRequest, user: dict = Depends(g
             access_token = None
 
     origin = request.headers.get("x-saathi-origin", "laptop").lower()
-    tools = get_mini_tool_definitions(_selected_tool_names(msg, bool(access_token)))
+    
+    # 🦾 v124.0: Disable tools for pure conversational mode
+    chat_mode = req.mode or "agentic"
+    is_pure_chat = chat_mode == "conversational"
+    
+    tools = None
+    if not is_pure_chat:
+        tools = get_mini_tool_definitions(_selected_tool_names(msg, bool(access_token)))
     local_tz = pytz.timezone(APP_TIMEZONE)
     current_time_str = datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S")
     system_prompt = (

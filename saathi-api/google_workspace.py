@@ -459,20 +459,56 @@ async def create_google_doc(access_token: str, title: str, content: str) -> dict
     return {"documentId": doc_id, "title": document.get("title"), "url": f"https://docs.google.com/document/d/{doc_id}/edit"}
 
 
-def _normalize_named_style(value: Optional[str]) -> str:
-    allowed = {
-        "NORMAL_TEXT",
-        "TITLE",
-        "SUBTITLE",
-        "HEADING_1",
-        "HEADING_2",
-        "HEADING_3",
-        "HEADING_4",
-        "HEADING_5",
-        "HEADING_6",
-    }
-    candidate = (value or "").upper()
-    return candidate if candidate in allowed else "NORMAL_TEXT"
+def _parse_markdown_to_blocks(content: str) -> list[dict]:
+    """🧬 SAATHI MARKDOWN PARSER (v124.0): Converts raw markdown into formatted Google Doc Blocks."""
+    blocks = []
+    # Normalize line endings and split
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+            
+        # 1. Headings (Support down to HEADING_4)
+        if raw.startswith("#### "):
+            blocks.append({"text": raw[5:], "paragraphStyle": "HEADING_4"})
+        elif raw.startswith("### "):
+            blocks.append({"text": raw[4:], "paragraphStyle": "HEADING_3"})
+        elif raw.startswith("## "):
+            blocks.append({"text": raw[3:], "paragraphStyle": "HEADING_2"})
+        elif raw.startswith("# "):
+             blocks.append({"text": raw[2:], "paragraphStyle": "HEADING_1"})
+        
+        # 2. Bullets
+        elif raw.startswith("- ") or raw.startswith("* "):
+            # Check if it's just a bullet or italicized text at start of line
+            # A bullet usually doesn't have a matching * at the end of the first word
+            blocks.append({
+                "text": raw[2:], 
+                "paragraphStyle": "NORMAL_TEXT",
+                "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+            })
+        
+        # 3. Normal Paragraph
+        else:
+            # Clean up all residual markdown symbols for a "Doc" look
+            # Remove Bold / Italic / Strikethrough
+            clean_text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", line) # Bold
+            clean_text = re.sub(r"(\*|_)(.*?)\1", r"\2", clean_text) # Italic
+            clean_text = re.sub(r"(~~)(.*?)\1", r"\2", clean_text) # Strikethrough
+            # Final sweep for any stray symbols
+            clean_text = clean_text.replace("**", "").replace("__", "").replace("~~", "")
+            blocks.append({"text": clean_text.strip(), "paragraphStyle": "NORMAL_TEXT"})
+            
+    return blocks
+
+
+async def create_google_doc_from_markdown(access_token: str, title: str, markdown_text: str) -> dict[str, Any]:
+    """🦾 v123.5: High-level entry point to creating formatted docs from AI markdown."""
+    blocks = _parse_markdown_to_blocks(markdown_text)
+    return await create_google_doc_from_blocks(access_token, title, blocks)
 
 
 async def create_google_doc_from_blocks(access_token: str, title: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:

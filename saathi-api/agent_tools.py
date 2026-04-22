@@ -332,7 +332,9 @@ async def execute_tool(
         if name == "create_doc":
             title = args.get("title", "Untitled")
             content = args.get("content", "")
-            document = await create_google_doc(access_token, title, content)
+            # 🦾 v123.5: Use markdown-aware creation
+            from google_workspace import create_google_doc_from_markdown
+            document = await create_google_doc_from_markdown(access_token, title, content)
             return document["url"]
 
         if name in {"create_calendar_event", "schedule_meeting_with_meet"}:
