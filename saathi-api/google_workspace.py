@@ -460,47 +460,69 @@ async def create_google_doc(access_token: str, title: str, content: str) -> dict
 
 
 def _parse_markdown_to_blocks(content: str) -> list[dict]:
-    """🧬 SAATHI MARKDOWN PARSER (v124.0): Converts raw markdown into formatted Google Doc Blocks."""
+    """🧬 SAATHI OUTLINE PARSER (v125.0): Converts markdown into Numbered/Alphabetical Doc Outlines."""
     blocks = []
     # Normalize line endings and split
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
     
+    h1_count = 0
+    h2_count = 0
+    h3_count = 0
+    bullet_count = 0
+    
     for line in lines:
         raw = line.strip()
         if not raw:
+            # Reset sub-counts on empty lines/new sections if desired
+            # But usually, numbering stays consistent
             continue
             
-        # 1. Headings (Support down to HEADING_4)
+        # 1. Structural Numbering for Headings
         if raw.startswith("#### "):
-            blocks.append({"text": raw[5:], "paragraphStyle": "HEADING_4"})
+            # We don't number level 4 usually, just clean it
+            blocks.append({"text": f"    {raw[5:]}", "paragraphStyle": "HEADING_4"})
+            
         elif raw.startswith("### "):
-            blocks.append({"text": raw[4:], "paragraphStyle": "HEADING_3"})
+            h3_count += 1
+            blocks.append({
+                "text": f"{h1_count}.{h2_count}.{h3_count} {raw[4:]}", 
+                "paragraphStyle": "HEADING_3"
+            })
+            
         elif raw.startswith("## "):
-            blocks.append({"text": raw[3:], "paragraphStyle": "HEADING_2"})
+            h2_count += 1
+            h3_count = 0 # Reset H3 below this H2
+            blocks.append({
+                "text": f"{h1_count}.{h2_count} {raw[3:]}", 
+                "paragraphStyle": "HEADING_2"
+            })
+            
         elif raw.startswith("# "):
-             blocks.append({"text": raw[2:], "paragraphStyle": "HEADING_1"})
+            h1_count += 1
+            h2_count = 0 # Reset H2/H3 below this H1
+            h3_count = 0
+            blocks.append({
+                "text": f"{h1_count}. {raw[2:]}", 
+                "paragraphStyle": "HEADING_1"
+            })
         
-        # 2. Bullets
+        # 2. Numbered / Alphabetical Point System for Bullets
         elif raw.startswith("- ") or raw.startswith("* "):
-            # Check if it's just a bullet or italicized text at start of line
-            # A bullet usually doesn't have a matching * at the end of the first word
             blocks.append({
                 "text": raw[2:], 
                 "paragraphStyle": "NORMAL_TEXT",
-                "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+                # Use Numbered Preset instead of Bullet discs
+                "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN"
             })
         
-        # 3. Normal Paragraph
+        # 3. Clean Normal Paragraph
         else:
-            # Clean up all residual markdown symbols for a "Doc" look
-            # Remove Bold / Italic / Strikethrough
-            clean_text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", line) # Bold
-            clean_text = re.sub(r"(\*|_)(.*?)\1", r"\2", clean_text) # Italic
-            clean_text = re.sub(r"(~~)(.*?)\1", r"\2", clean_text) # Strikethrough
-            # Final sweep for any stray symbols
-            clean_text = clean_text.replace("**", "").replace("__", "").replace("~~", "")
-            blocks.append({"text": clean_text.strip(), "paragraphStyle": "NORMAL_TEXT"})
+            # Deep clean of Bold/Italic as before
+            clean_text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", line)
+            clean_text = re.sub(r"(\*|_)(.*?)\1", r"\2", clean_text)
+            clean_text = clean_text.replace("**", "").replace("__", "").strip()
+            blocks.append({"text": clean_text, "paragraphStyle": "NORMAL_TEXT"})
             
     return blocks
 
