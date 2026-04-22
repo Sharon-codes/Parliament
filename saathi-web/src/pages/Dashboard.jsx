@@ -1,965 +1,1024 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  Send, Home, MessageSquarePlus, History, Settings,
-  Mic, MicOff, Volume2, VolumeX, X, Moon, Sun, ChevronUp,
-  Brain, Bell, BellOff, Search, Check, Sparkles, Radio, FileText
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Plus, Settings, LogOut, Send, Mic, 
+  LoaderCircle, Mail, Calendar, ExternalLink, Smartphone, 
+  MessageSquare, Trash2, ArrowRight, Brain, Globe, Volume2, 
+  ArrowLeft, Clock, CheckCircle2, AlertCircle, Trash, Menu, X, Monitor, FileText, PlusCircle, Languages, Paperclip
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useNavigate } from "react-router-dom";
+import { apiFetch, getAvatarUrl, formatSessionDate } from "../lib/api";
+import { API_BASE } from "../lib/config";
+import WorkspaceActionModal from "../components/WorkspaceActionModal";
+import ConnectPage from "./ConnectPage";
+import PolyglotPortal from "./PolyglotPortal";
 
-const API = 'http://localhost:8000';
-const THUMBS = ['🧬','🤖','🔬','🧠','⚛️','📡','🌿','💡','🕹️','📊'];
-
-// ── Inline code/markdown formatter ───────────────────────────────────────────
-function Msg({ text }) {
-  const parts = text.split(/(```[\s\S]*?```)/g);
-  return (
-    <>
-      {parts.map((p, i) => {
-        if (p.startsWith('```')) {
-          const raw  = p.slice(3, -3);
-          const nl   = raw.indexOf('\n');
-          const lang = nl > -1 ? raw.slice(0, nl).trim() : '';
-          const code = nl > -1 ? raw.slice(nl + 1) : raw;
-          return (
-            <pre key={i}>
-              {lang && <span style={{ fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--accent)', display: 'block', marginBottom: 8 }}>{lang}</span>}
-              {code}
-            </pre>
-          );
-        }
-        return (
-          <span key={i}>
-            {p.split(/(`[^`]+`)/g).map((s, j) =>
-              s.startsWith('`') && s.endsWith('`')
-                ? <code key={j}>{s.slice(1, -1)}</code>
-                : s.split('\n').map((line, k) => <span key={k}>{line}{k < s.split('\n').length - 1 && <br/>}</span>)
-            )}
-          </span>
-        );
-      })}
-    </>
-  );
+function createLocalMessage(role, text) {
+  return { id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`, role, text };
 }
 
-// ── Nudge Card ────────────────────────────────────────────────────────────────
-function NudgeCard({ nudge, onAck, onSuppress }) {
-  const icons = { time: '🕰', worry: '💛', progress: '📈', context: '📅' };
-  const icon = icons[nudge.nudge_type] || '✦';
+function detectQuickAction(message, activeProtocol) {
+  const text = (message || "").trim();
+  const lower = text.toLowerCase();
+  const protocolName = activeProtocol?.name;
+
+  if (protocolName === "Gmail") return "email";
+  if (protocolName === "GMeet") return "meeting";
+  if (protocolName === "Mirror") return "doc";
+  if (protocolName === "YouTube") return "youtube";
+  if (protocolName === "Computer") return "app";
+
+  if (/^(mail|email|send email|compose email)\b/i.test(text)) return "email";
+  if (/^(meeting|schedule meeting|book meeting|create meeting)\b/i.test(text)) return "meeting";
+  if (/^(doc|document|create doc|create google doc|make google doc)\b/i.test(text)) return "doc";
+  if (/\b(youtube|watch|play)\b/i.test(text)) return "youtube";
+  if (/^(open|launch|start)\b/i.test(text) && !lower.includes("google doc")) return "app";
+  return null;
+}
+
+function extractAppName(message, activeProtocol) {
+  const text = (message || activeProtocol?.draft || "").trim();
+  return text
+    .replace(/^(saathi,\s*)?/i, "")
+    .replace(/^(open|launch|start)\s+/i, "")
+    .replace(/\s+(app|application)\s*$/i, "")
+    .replace(/\s+(on my laptop|on my computer)\s*$/i, "")
+    .trim();
+}
+
+function extractYouTubeQuery(message, activeProtocol) {
+  const text = (message || activeProtocol?.draft || "").trim();
+  return text
+    .replace(/^(open youtube|youtube|play|watch)\s*/i, "")
+    .replace(/\s+on youtube\s*$/i, "")
+    .trim();
+}
+
+function shouldAttachDocumentContext(message, currentFile) {
+  if (!currentFile?.content) return false;
+  return /\b(doc|document|file|attached|attachment|this|summarize|summary|translate|analyze|review|read)\b/i.test(message || "");
+}
+
+const MessageBubble = ({ message, onSpeak, speakingId }) => {
+  const isAssistant = message.role === "assistant";
+  
+  const linkify = (text) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+    return parts.map((part, i) => {
+      if (part.match(urlRegex)) {
+        return (
+          <a 
+            key={i} 
+            href={part} 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            style={{ 
+              display: 'inline-flex', alignItems: 'center', gap: '8px',
+              padding: '6px 12px', background: '#1c1917', color: 'white',
+              borderRadius: '8px', textDecoration: 'none', fontSize: '0.8rem',
+              margin: '4px 0', fontWeight: '500'
+            }}
+          >
+            <ExternalLink size={14} />
+            Open Resource
+          </a>
+        );
+      }
+      return part;
+    });
+  };
+
   return (
-    <motion.div
-      className="nudge-card"
-      initial={{ opacity: 0, y: -8 }}
+    <motion.div 
+      className={`msg-row ${message.role}`}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.25 }}
+      style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', width: '100%' }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-        <span style={{ fontSize: 16, lineHeight: 1, marginTop: 2 }}>{icon}</span>
-        <div style={{ flex: 1 }}>
-          <div className="nudge-type-label">{nudge.nudge_type} nudge · {nudge.topic}</div>
-          <p className="nudge-text">{nudge.message}</p>
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: 6, marginTop: 10, justifyContent: 'flex-end' }}>
-        <button className="nudge-btn-dismiss" onClick={() => onSuppress(nudge.topic)} title="Never remind me about this">
-          <BellOff size={11}/> Suppress
-        </button>
-        <button className="nudge-btn-ack" onClick={() => onAck(nudge.id)} title="Got it">
-          <Check size={11}/> Got it
-        </button>
+      <div className="msg-bubble" style={{ maxWidth: '85%', position: 'relative' }}>
+        {linkify(message.text)}
+        {isAssistant && (
+          <button style={{ 
+            marginTop: '10px', display: 'flex', alignItems: 'center', background: 'none', border: 'none', color: '#78716c', cursor: 'pointer' 
+          }} onClick={() => onSpeak(message.id, message.text)}>
+            <Volume2 size={14} />
+          </button>
+        )}
       </div>
     </motion.div>
   );
-}
+};
 
-// ── Memory Entry ──────────────────────────────────────────────────────────────
-function MemoryEntry({ entry }) {
-  const topicColors = {
-    research: 'var(--accent)',
-    personal: 'var(--gold)',
-    academic: '#7B9FC4',
-    social: '#B47EC0',
-    general: 'var(--mist)',
-  };
-  return (
-    <div className="mem-entry">
-      <span className="mem-topic-dot" style={{ background: topicColors[entry.topic] || 'var(--mist)' }}/>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p className="mem-text">{entry.content.slice(0, 110)}{entry.content.length > 110 ? '…' : ''}</p>
-        <span className="mem-meta">{entry.topic} · {entry.timestamp?.slice(0, 10)}</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Fact Entry ───────────────────────────────────────────────────────────────
-function FactEntry({ fact }) {
-  return (
-    <div className="mem-entry fact-entry">
-      <span style={{ fontSize: 13 }}>✦</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p className="mem-text">{fact.content}</p>
-        <span className="mem-meta">{fact.topic} · remembered</span>
-      </div>
-    </div>
-  );
-}
-
-// ── Right Panel Section ───────────────────────────────────────────────────────
-function RPSection({ title, open, onToggle, children }) {
-  return (
-    <div className="rp-section">
-      <div className="rp-section-hd">
-        {title}
-        <button onClick={onToggle}>
-          <ChevronUp size={13} style={{ transform: open ? 'rotate(0)' : 'rotate(180deg)', transition: 'transform .2s' }}/>
-        </button>
-      </div>
-      <AnimatePresence>
-        {open && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }}>
-            {children}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-export default function Dashboard() {
-  // ── Chat state ──────────────────────────────────────────────────────────────
-  const [query, setQuery]         = useState('');
-  const [mode, setMode]           = useState('chat');
-  const [view, setView]           = useState('home');
-  const [sessionId, setSessionId] = useState(null);
-  const [chat, setChat]           = useState([
-    { role: 'ai', text: 'Peace and welcome.\nHow may I assist you today?' }
-  ]);
-  const [sessions, setSessions]   = useState([]);
-  const [events, setEvents]       = useState([]);
-  const [research, setResearch]   = useState([]);
-  const [isTyping, setIsTyping]   = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [voiceOn, setVoiceOn]     = useState(false);
-  const [isDark, setIsDark]       = useState(false);
-
-  // ── Right panel toggles ─────────────────────────────────────────────────────
-  const [ffOpen, setFfOpen]   = useState(true);
-  const [ifOpen, setIfOpen]   = useState(true);
-  const [memOpen, setMemOpen] = useState(true);
-  const [nudgeOpen, setNudgeOpen] = useState(true);
-
-  // ── Memory & Nudge state ────────────────────────────────────────────────────
-  const [episodes, setEpisodes]   = useState([]);
-  const [facts, setFacts]         = useState([]);
-  const [nudges, setNudges]       = useState([]);
-  const [memSearch, setMemSearch] = useState('');
-  const [memSearchResults, setMemSearchResults] = useState(null);
-
-  // ── LLM provider status ─────────────────────────────────────────────────
-  const [llmStatus, setLlmStatus] = useState(null);
-
-  // ── Mobile sync / QR state ────────────────────────────────────────────
-  const [showSync, setShowSync]     = useState(false);
-  const [syncData, setSyncData]     = useState(null);
-  const [syncLoading, setSyncLoading] = useState(false);
-
-  // ── Settings ────────────────────────────────────────────────────────────────
+const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
+  const navigate = useNavigate();
+  const [sessions, setSessions] = useState([]);
+  const [activeSession, setActiveSession] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [view, setView] = useState("DASHBOARD"); 
+  const [chatMode, setChatMode] = useState("agentic"); 
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [userSettings, setUserSettings] = useState({
-    name: 'Guest', interests: 'machine learning', language: 'English',
-    theme: 'light', nudge_sensitivity: 'balanced'
-  });
+  const [speakingId, setSpeakingId] = useState(null);
+  const [activeProtocol, setActiveProtocol] = useState(null); // {icon: any, name: string, draft: string}
+  const [showFab, setShowFab] = useState(false);
+  const [showLanguageSelector, setShowLanguageSelector] = useState(false);
+  const [currentFile, setCurrentFile] = useState(null);
+  const [workspaceModal, setWorkspaceModal] = useState(null);
+  const [pendingQuickActionPrompt, setPendingQuickActionPrompt] = useState("");
+  const fileInputRef = useRef(null);
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
 
-  // ── Voice state ───────────────────────────────────────────────────
-  const [showVoice, setShowVoice]       = useState(false);
-  const [voiceMode, setVoiceMode]       = useState('off');
-  const [voiceStatus, setVoiceStatus]   = useState(null);
-  const [voiceTranscript, setVoiceTranscript] = useState('');
-  const [dictationText, setDictationText]     = useState('');
-  const [isVoiceRec, setIsVoiceRec]           = useState(false);
-  const [isSpeaking, setIsSpeaking]           = useState(false);
-  const [ttsText, setTtsText]                 = useState('');
-  const voiceWsRef = useRef(null);
+  const messagesEndRef = useRef(null);
 
-  const endRef = useRef(null);
-
-  // ── Dark mode ───────────────────────────────────────────────────────────────
-  const applyDark = (d) => { document.documentElement.classList.toggle('dark', d); setIsDark(d); };
-
-  // ── Data fetchers ────────────────────────────────────────────────────────────
-  const fetchSessions = useCallback(async () => {
-    try { const r = await fetch(`${API}/api/sessions`); const d = await r.json(); setSessions(d.sessions || []); } catch {}
-  }, []);
-
-  const fetchMemory = useCallback(async () => {
-    try {
-      const [epR, factsR, nudgesR] = await Promise.all([
-        fetch(`${API}/api/memory/episodes?days=14`),
-        fetch(`${API}/api/memory/facts`),
-        fetch(`${API}/api/nudges`),
-      ]);
-      const epD = await epR.json();
-      const factsD = await factsR.json();
-      const nudgesD = await nudgesR.json();
-      setEpisodes(epD.episodes || []);
-      setFacts(factsD.facts || []);
-      setNudges(nudgesD.nudges || []);
-    } catch {}
-  }, []);
-
-  const searchMemory = useCallback(async (q) => {
-    if (!q.trim()) { setMemSearchResults(null); return; }
-    try {
-      const r = await fetch(`${API}/api/memory/search?q=${encodeURIComponent(q)}`);
-      const d = await r.json();
-      setMemSearchResults(d);
-    } catch {}
-  }, []);
-
-  const loadSession = async (id) => {
-    setSessionId(id); setView('home');
-    try {
-      const r = await fetch(`${API}/api/sessions/${id}`);
-      const d = await r.json();
-      setChat(d.messages?.length ? d.messages : [{ role: 'ai', text: 'What shall we explore?' }]);
-    } catch {}
-  };
-
-  const newChat = async () => {
-    setView('home');
-    try {
-      const r = await fetch(`${API}/api/sessions`, { method: 'POST' });
-      const d = await r.json();
-      setSessionId(d.session_id);
-      setChat([{ role: 'ai', text: 'New session. What shall we explore?' }]);
-      fetchSessions();
-    } catch {}
-  };
-
-  const boot = () => {
-    fetch(`${API}/api/settings`).then(r => r.json()).then(d => {
-      setUserSettings({ name: 'Guest', interests: 'machine learning', language: 'English', theme: 'light', nudge_sensitivity: 'balanced', ...d });
-      applyDark(d.theme === 'dark');
-    }).catch(() => {});
-    fetch(`${API}/api/calendar`).then(r => r.json()).then(d => setEvents(d.events || [])).catch(() => {});
-    fetch(`${API}/api/research`).then(r => r.json()).then(d => setResearch(d.papers || [])).catch(() => {});
-    fetch(`${API}/api/llm-status`).then(r => r.json()).then(d => setLlmStatus(d)).catch(() => {});
-    fetch(`${API}/api/voice/status`).then(r => r.json()).then(d => setVoiceStatus(d)).catch(() => {});
-    fetch(`${API}/api/sync/status`).then(r => r.json()).then(d => {
-      if (d.tunnel_active) setSyncData(s => ({ ...s, ...d }));
-    }).catch(() => {});
-    fetchSessions();
-    fetchMemory();
-  };
-
-  useEffect(() => { boot(); }, []);
-
-  // Poll nudges every 2 minutes
   useEffect(() => {
-    const iv = setInterval(() => fetchMemory(), 120_000);
-    return () => clearInterval(iv);
-  }, [fetchMemory]);
+    loadSessions();
+    // Proactive Workspace Sync
+    apiFetch("/api/workspace/sync", { session, method: "POST" }).catch(err => console.error("Sync fail:", err));
+  }, []);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chat, isTyping]);
+  useEffect(() => {
+    if (activeSession) loadMessages(activeSession.id);
+  }, [activeSession]);
 
-  // ── Voice WebSocket ───────────────────────────────────────────────────
-  const connectVoiceWs = useCallback(() => {
-    if (voiceWsRef.current?.readyState === WebSocket.OPEN) return;
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, sending]);
+
+  const loadSessions = async () => {
     try {
-      const ws = new WebSocket(`${WS_API}/ws/voice`);
-      voiceWsRef.current = ws;
+      const data = await apiFetch("/api/sessions", { session });
+      if (Array.isArray(data)) {
+        setSessions(data);
+        if (data.length > 0 && !activeSession) setActiveSession(data[0]);
+      } else {
+        console.error("Invalid sessions response:", data);
+        setSessions([]);
+      }
+    } catch (err) {
+      console.error("Load sessions crash:", err);
+      setSessions([]);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
 
-      ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data);
-        switch (msg.type) {
-          case 'hello':
-            setVoiceStatus(s => ({ ...s, ...msg }));
-            setVoiceMode(msg.mode || 'off');
-            break;
-          case 'mode':
-            setVoiceMode(msg.mode);
-            break;
-          case 'wake':
-            setIsVoiceRec(true);
-            break;
-          case 'recording_start':
-            setIsVoiceRec(true);
-            break;
-          case 'transcript':
-            setIsVoiceRec(false);
-            setVoiceTranscript(msg.text);
-            if (msg.final) setChat(h => [...h, { role: 'user', text: '\uD83C\uDF99 ' + msg.text }]);
-            break;
-          case 'tts':
-            setIsSpeaking(true); setTtsText(msg.text);
-            setTimeout(() => setIsSpeaking(false), 4000);
-            break;
-          case 'tts_urgent':
-            setIsSpeaking(true); setTtsText(msg.text);
-            setTimeout(() => setIsSpeaking(false), 4000);
-            break;
-          case 'dictation_chunk':
-            setDictationText(t => t + ' ' + msg.text);
-            break;
-          case 'dictation_done':
-            setDictationText('');
-            if (msg.text) setQuery(msg.text);
-            break;
-          default: break;
+  const loadMessages = async (sid) => {
+    if (!sid) return;
+    setLoadingMessages(true);
+    try {
+      const data = await apiFetch(`/api/sessions/${sid}/messages`, { session });
+      if (Array.isArray(data)) {
+        setMessages(data);
+      } else {
+        console.error("Invalid messages response:", data);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error("Load messages crash:", err);
+      setMessages([]);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  const ensureSession = async (title = "Quick Action") => {
+    if (activeSession?.id) return activeSession.id;
+    const created = await apiFetch("/api/sessions", {
+      session,
+      method: "POST",
+      body: { title },
+    });
+    setSessions((prev) => [created, ...prev]);
+    setActiveSession(created);
+    return created.id;
+  };
+
+  const appendQuickActionMessages = async (userText, assistantText) => {
+    await ensureSession();
+    setMessages((prev) => [
+      ...prev,
+      createLocalMessage("user", userText),
+      createLocalMessage("assistant", assistantText),
+    ]);
+  };
+
+  const openWorkspaceModal = (type, prompt = "") => {
+    setPendingQuickActionPrompt(prompt || draft);
+    setWorkspaceModal(type);
+    setShowFab(false);
+  };
+
+  const handleCreateSession = async () => {
+    const res = await apiFetch("/api/sessions", {
+      session,
+      method: "POST",
+      body: { title: "New Thought" }
+    });
+    setSessions([res, ...sessions]);
+    setActiveSession(res);
+  };
+
+  const handleDeleteSession = async (id, e) => {
+    e.stopPropagation();
+    await apiFetch(`/api/sessions/${id}`, { session, method: "DELETE" });
+    setSessions(sessions.filter(s => s.id !== id));
+    if (activeSession?.id === id) setActiveSession(null);
+  };
+
+  const handleProtocolSelect = (icon, name, draft) => {
+    if (name === "Gmail") {
+      openWorkspaceModal("email", currentFile ? `email ${currentFile.name}` : draft);
+      return;
+    }
+
+    if (name === "GMeet") {
+      openWorkspaceModal("meeting", draft);
+      return;
+    }
+
+    if (name === "Mirror") {
+      openWorkspaceModal("doc", currentFile?.content || draft);
+      return;
+    }
+
+    if (name === "Translate" && currentFile) {
+        setShowLanguageSelector(true);
+        setShowFab(false);
+        return;
+    }
+
+    setActiveProtocol({ icon, name, draft });
+    setDraft(draft);
+    setShowFab(false);
+  };
+
+  const resetProtocol = () => {
+    setActiveProtocol(null);
+    setDraft("");
+    setShowFab(false);
+    setWorkspaceModal(null);
+    setPendingQuickActionPrompt("");
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setSending(true);
+      const formData = new FormData();
+      formData.append("file", file);
+      
+      try {
+        const res = await apiFetch(`/api/extract-doc`, {
+          session,
+          method: "POST",
+          body: formData
+        });
+        setCurrentFile({ name: file.name, content: res.content, file });
+      } catch (err) {
+        alert("Failed to read document: " + err.message);
+      } finally {
+        setSending(false);
+      }
+    }
+  };
+
+  const handleTranslateDoc = async (targetLang) => {
+    if (!currentFile) return;
+    
+    try {
+      setSending(true);
+      let res;
+      if (currentFile.file) {
+        const formData = new FormData();
+        formData.append("file", currentFile.file);
+        formData.append("target_lang", targetLang || "hi");
+        const response = await fetch(`${API_BASE}/api/workspace/translate-file`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          body: formData,
+        });
+        if (!response.ok) throw new Error("Translation upload failed.");
+        res = await response.json();
+      } else {
+        const sid = await ensureSession(currentFile.name);
+        res = await apiFetch(`/api/sessions/${sid}/translate`, {
+          session,
+          method: "POST",
+          body: {
+            name: currentFile.name,
+            content: currentFile.content,
+            target_lang: targetLang || "hi"
+          }
+        });
+      }
+      setMessages(prev => [...prev, createLocalMessage("assistant", `Translation mirrored to Workspace.\nLink: ${res.document?.url || res.link}`)]);
+    } catch (err) {
+      alert("Translation failed: " + err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleDirectQuickAction = async (type, userMsg) => {
+    if (type === "email" || type === "meeting" || type === "doc") {
+      openWorkspaceModal(type, userMsg);
+      setDraft("");
+      setActiveProtocol(null);
+      return;
+    }
+
+    try {
+      setSending(true);
+      if (type === "youtube") {
+        const query = extractYouTubeQuery(userMsg, activeProtocol);
+        const result = await apiFetch("/api/system/open-youtube", {
+          session,
+          method: "POST",
+          body: { query },
+        });
+        await appendQuickActionMessages(userMsg, result.message);
+      }
+
+      if (type === "app") {
+        const appName = extractAppName(userMsg, activeProtocol);
+        const result = await apiFetch("/api/system/open-app", {
+          session,
+          method: "POST",
+          body: { app_name: appName },
+        });
+        await appendQuickActionMessages(userMsg, result.message);
+      }
+
+      setDraft("");
+      setActiveProtocol(null);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleSend = async () => {
+    const userMsg = draft.trim();
+    if (!userMsg || sending) return;
+
+    const quickAction = detectQuickAction(userMsg, activeProtocol);
+    if (quickAction) {
+      await handleDirectQuickAction(quickAction, userMsg);
+      return;
+    }
+
+    setDraft(activeProtocol ? activeProtocol.draft : "");
+
+    const sid = await ensureSession(userMsg.slice(0, 30));
+    const activeFile = currentFile;
+    setMessages(prev => [...prev, createLocalMessage("user", userMsg)]);
+    setSending(true);
+
+    try {
+      const res = await apiFetch(`/api/sessions/${sid}/chat`, {
+        session,
+        method: "POST",
+        body: { 
+          text: userMsg, 
+          mode: chatMode,
+          doc_context: shouldAttachDocumentContext(userMsg, activeFile) ? { name: activeFile.name, content: activeFile.content } : null
         }
-      };
-
-      ws.onclose = () => {
-        setIsVoiceRec(false);
-        setIsSpeaking(false);
-      };
-    } catch (e) {
-      console.warn('Voice WS failed:', e);
-    }
-  }, []);
-
-  const changeVoiceMode = useCallback((newMode) => {
-    setVoiceMode(newMode);
-    if (voiceWsRef.current?.readyState === WebSocket.OPEN) {
-      voiceWsRef.current.send(JSON.stringify({ type: 'set_mode', mode: newMode }));
-    } else {
-      // fallback: REST
-      fetch(`${API}/api/voice/mode`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: newMode })
-      }).catch(() => {});
-    }
-  }, []);
-
-  const handleDictationStop = useCallback(() => {
-    if (voiceWsRef.current?.readyState === WebSocket.OPEN) {
-      voiceWsRef.current.send(JSON.stringify({ type: 'dictation_stop' }));
-    }
-    changeVoiceMode('off');
-  }, [changeVoiceMode]);
-
-  const openVoice = useCallback(() => {
-    setShowVoice(true);
-    connectVoiceWs();
-    fetch(`${API}/api/voice/status`).then(r => r.json()).then(d => setVoiceStatus(d)).catch(() => {});
-  }, [connectVoiceWs]);
-
-  // ── Settings save ────────────────────────────────────────────────────────────
-  const saveSettings = async (e) => {
-    e.preventDefault(); setShowSettings(false);
-    try {
-      await fetch(`${API}/api/settings`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userSettings)
       });
-      boot();
-    } catch {}
-  };
-
-  // ── Voice ────────────────────────────────────────────────────────────────────
-  const toggleListen = () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert('Voice unsupported.'); return; }
-    if (isListening) { setIsListening(false); return; }
-    const rec = new SR();
-    rec.lang = userSettings.language === 'Hindi' ? 'hi-IN' : 'en-US';
-    setIsListening(true); rec.start();
-    rec.onresult = e => { setQuery(e.results[0][0].transcript); setIsListening(false); };
-    rec.onerror = () => setIsListening(false);
-  };
-
-  const speak = (text) => {
-    if (!voiceOn || !window.speechSynthesis) return;
-    const u = new SpeechSynthesisUtterance(text.replace(/```[\s\S]*?```/g, 'code block'));
-    window.speechSynthesis.speak(u);
-  };
-
-  // ── Send message ─────────────────────────────────────────────────────────────
-  const sendMsg = async (override) => {
-    const text = override || query;
-    if (!text.trim()) return;
-    setChat(h => [...h, { role: 'user', text }]);
-    setQuery(''); setIsTyping(true);
-    try {
-      const r = await fetch(`${API}/api/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, mode, session_id: sessionId })
-      });
-      const d = await r.json();
-      if (d.session_id && d.session_id !== sessionId) setSessionId(d.session_id);
-      setChat(h => [...h, { role: 'ai', text: d.reply }]);
-      speak(d.reply);
-      fetchSessions();
-      // Refresh memory & nudges after every message
-      setTimeout(fetchMemory, 800);
-    } catch {
-      setChat(h => [...h, { role: 'ai', text: 'Connection lost. Check backend.' }]);
+      
+      // 🧬 Smart Redirect Handler (v113.0)
+      if (typeof res.text === "string" && res.text.includes("DEVICE_REDIRECT:")) {
+        const parts = res.text.split("DEVICE_REDIRECT:");
+        const urlPart = parts[1].split(/\s/)[0].trim();
+        window.open(urlPart, "_blank");
+        res.text = res.text.replace(/DEVICE_REDIRECT:[^\s]+/, "🚀 Signal intercepted. Command executed on this device.");
+      }
+      
+      setMessages(prev => [...prev, res]);
+    } finally {
+      setSending(false);
     }
-    setIsTyping(false);
   };
 
-  // ── Nudge handlers ───────────────────────────────────────────────────────────
-  const ackNudge = async (id) => {
-    try { await fetch(`${API}/api/nudges/acknowledge`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nudge_id: id }) }); }
-    catch {}
-    setNudges(ns => ns.filter(n => n.id !== id));
-  };
-
-  const suppressNudge = async (topic) => {
-    try { await fetch(`${API}/api/nudges/suppress`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ topic }) }); }
-    catch {}
-    setNudges(ns => ns.filter(n => n.topic !== topic));
-  };
-
-  // ── Memory search debounce ───────────────────────────────────────────────────
-  const memSearchTimer = useRef(null);
-  const handleMemSearch = (v) => {
-    setMemSearch(v);
-    clearTimeout(memSearchTimer.current);
-    memSearchTimer.current = setTimeout(() => searchMemory(v), 500);
-  };
-
-  // ── Displayed episodes/facts ─────────────────────────────────────────────────
-  const displayEpisodes = memSearchResults ? memSearchResults.episodes : episodes.slice(0, 6);
-  const displayFacts    = memSearchResults ? memSearchResults.facts    : facts.slice(0, 5);
-
-  // ── Active nudges (unacknowledged) ───────────────────────────────────────────
-  const activeNudges = nudges.filter(n => !n.acknowledged);
-
-  // ── Sync / QR panel ──────────────────────────────────────────────────────────
-  const openSyncPanel = useCallback(async () => {
-    setShowSync(true);
-    setSyncLoading(true);
-    try {
-      const r = await fetch(`${API}/api/sync/session`);
-      const d = await r.json();
-      setSyncData(d);
-    } catch {
-      setSyncData({ error: 'Backend not reachable. Is the API running?' });
+  const speakMessage = (id, text) => {
+    if (speakingId) {
+      window.speechSynthesis.cancel();
+      if (speakingId === id) { setSpeakingId(null); return; }
     }
-    setSyncLoading(false);
-  }, []);
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeakingId(null);
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  };
+
+
+  if (view === "MOBILE_CONNECT") {
+    return <ConnectPage onBack={() => setView("DASHBOARD")} session={session} />;
+  }
+
+  if (view === "POLYGLOT_PORTAL") {
+    return <PolyglotPortal session={session} onBack={() => setView("DASHBOARD")} />;
+  }
+
+  const fabTargets = isMobile
+    ? {
+        conversation: { x: 0, y: -76 },
+        gmail: { x: 76, y: -76 },
+        meeting: { x: 152, y: -76 },
+        translate: { x: 0, y: -152 },
+        youtube: { x: 76, y: -152 },
+        computer: { x: 152, y: -152 },
+        doc: { x: 76, y: -228 },
+      }
+    : {
+        conversation: { x: -140, y: 0 },
+        gmail: { x: -121, y: -70 },
+        meeting: { x: -70, y: -121 },
+        translate: { x: 0, y: -140 },
+        youtube: { x: 70, y: -121 },
+        computer: { x: 121, y: -70 },
+        doc: { x: 140, y: 0 },
+      };
 
   return (
-    <div className="app">
+    <div className="wabi-shell">
+      <WorkspaceActionModal
+        open={Boolean(workspaceModal)}
+        type={workspaceModal}
+        session={session}
+        initialPrompt={pendingQuickActionPrompt}
+        currentFile={currentFile}
+        onClose={() => {
+          setWorkspaceModal(null);
+          setPendingQuickActionPrompt("");
+        }}
+        onSuccess={async ({ assistantText }) => {
+          await appendQuickActionMessages(pendingQuickActionPrompt || workspaceModal, assistantText);
+          setWorkspaceModal(null);
+          setPendingQuickActionPrompt("");
+          setDraft("");
+          setActiveProtocol(null);
+        }}
+      />
 
-      {/* ── NUDGE TOAST OVERLAY (top-center soft cards) ──────────── */}
-      <div className="nudge-toast-area">
-        <AnimatePresence>
-          {activeNudges.slice(0, 2).map(n => (
-            <NudgeCard key={n.id} nudge={n} onAck={ackNudge} onSuppress={suppressNudge}/>
-          ))}
-        </AnimatePresence>
-      </div>
+      {isMobile && (
+        <button 
+          onClick={() => setShowMobileSidebar(true)}
+          style={{ position: 'fixed', top: '24px', left: '24px', zIndex: 1000, background: 'var(--ink)', color: 'white', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+        >
+          <Menu size={20} />
+        </button>
+      )}
 
-      {/* ────────── LEFT SIDEBAR ────────── */}
-      <aside className="sb-left">
-        <div className="sb-logo-area">
-          <div className="sb-logo-main">
-            साथी <span className="sb-logo-sub">(saathi)</span>
-          </div>
-          {activeNudges.length > 0 && (
-            <div className="nudge-badge">{activeNudges.length} nudge{activeNudges.length > 1 ? 's' : ''}</div>
+      <div className={`dashboard-layout ${showMobileSidebar ? "mobile-sidebar-active" : ""}`}>
+        <aside className={`side-panel ${showMobileSidebar ? "active" : ""}`}>
+          {isMobile && (
+            <button 
+              onClick={() => setShowMobileSidebar(false)}
+              style={{ position: 'absolute', top: '20px', right: '20px', background: 'none', border: 'none', color: 'var(--ink)' }}
+            >
+              <X size={24} />
+            </button>
           )}
-        </div>
 
-        <nav className="sb-nav">
-          <button className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}>
-            <Home size={15}/> Home
-          </button>
-          <button className="nav-item" onClick={newChat}>
-            <MessageSquarePlus size={15}/> New Chat
-          </button>
-          <button className={`nav-item ${view === 'history' ? 'active' : ''}`} onClick={() => setView('history')}>
-            <History size={15}/> History
-          </button>
-          <button className={`nav-item ${view === 'memory' ? 'active' : ''}`} onClick={() => setView('memory')}>
-            <Brain size={15}/> Memory
-          </button>
-          <button className={`nav-item ${view === 'nudges' ? 'active' : ''}`} onClick={() => setView('nudges')}>
-            <Bell size={15}/> Nudges
-            {activeNudges.length > 0 && <span className="nav-badge">{activeNudges.length}</span>}
-          </button>
-          <button className="nav-item" onClick={openSyncPanel} style={{ color: syncData?.tunnel_active ? 'var(--accent)' : undefined }}>
-            <Radio size={15}/> Sync Mobile
-            {syncData?.tunnel_active && <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', display: 'inline-block', marginLeft: 4 }}/>}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '16px', marginBottom: '10px' }}>
+            <Brain size={28} />
+            <h2 className="serif" style={{ fontSize: '1.8rem' }}>Saathi</h2>
+          </div>
+          <p className="hero-tag" style={{ textAlign: 'center', marginBottom: '20px' }}>Neural Intelligence</p>
+
+          <button className="pill-btn" onClick={() => { handleCreateSession(); if(isMobile) setShowMobileSidebar(false); }} style={{ padding: '14px' }}>
+            <Plus size={18} />
+            <span>New Session</span>
           </button>
 
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <p className="hero-tag" style={{ marginBottom: 0 }}>Memory Threads</p>
+            {sessions.map(s => (
+              <div 
+                key={s.id} 
+                className={`wabi-card ${activeSession?.id === s.id ? "active" : ""}`}
+                style={{ 
+                  padding: '16px 20px', cursor: 'pointer', display: 'flex', justifyContent: 'space-between',
+                  background: activeSession?.id === s.id ? '#1c1917' : 'white',
+                  color: activeSession?.id === s.id ? 'white' : '#1c1917'
+                }}
+                onClick={() => { setActiveSession(s); if(isMobile) setShowMobileSidebar(false); }}
+              >
+                <div style={{ overflow: 'hidden' }}>
+                  <h4 className="serif" style={{ fontSize: '1rem', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{s.title}</h4>
+                  <span style={{ fontSize: '0.7rem', opacity: 0.6 }}>{formatSessionDate(s.updated_at)}</span>
+                </div>
+                <button 
+                  onClick={(e) => handleDeleteSession(s.id, e)} 
+                  style={{ 
+                    background: 'none', border: 'none', color: activeSession?.id === s.id ? '#78716c' : '#f87171',
+                    cursor: 'pointer', padding: '4px' 
+                  }}
+                >
+                  <Trash size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: '12px' }}>
+            {!isMobile && (
+              <button className="pill-btn secondary" onClick={() => setView("MOBILE_CONNECT")} style={{ flex: 1, padding: '12px', justifyContent: 'center' }} title="Mobile Link">
+                <Smartphone size={18} />
+              </button>
+            )}
+            <button className="pill-btn secondary" onClick={onSignOut} style={{ flex: 1, padding: '12px', justifyContent: 'center' }} title="Sign Out">
+              <LogOut size={18} />
+            </button>
+          </div>
+
+          <div style={{ marginTop: '20px', textAlign: 'center', opacity: 0.4, fontSize: '0.65rem' }}>
+            <p className="serif">By Khushi & Sharon</p>
+            <p>Warriors against Antigravity ⚔️</p>
+          </div>
+        </aside>
+
+        <main className="main-panel">
+          <div className="chat-scroll">
+            {messages.length === 0 && !loadingMessages && (
+              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', opacity: 0.5 }}>
+                <MessageSquare size={48} style={{ marginBottom: '20px' }} />
+                <h3 className="serif">Neural Canvas Empty</h3>
+                <p>Begin a conversation to anchor your thoughts.</p>
+              </div>
+            )}
+            {messages.map(m => (
+              <MessageBubble 
+                key={m.id} 
+                message={m} 
+                onSpeak={speakMessage} 
+                speakingId={speakingId} 
+              />
+            ))}
+            {sending && (
+              <div className="msg-row assistant">
+                <div className="msg-bubble" style={{ display: 'flex', gap: '8px', padding: '16px 24px' }}>
+                  <LoaderCircle size={18} className="animate-spin" />
+                  <span>Saathi is thinking...</span>
+                </div>
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Language Selector Overlay (v101.0) */}
           <AnimatePresence>
-            {view === 'history' && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }}>
-                <div className="sb-session-list">
-                  {sessions.length === 0
-                    ? <span className="s-section-label" style={{ color: 'var(--mist)', fontStyle: 'italic', fontWeight: 300 }}>No history yet.</span>
-                    : sessions.map(s => (
-                      <button key={s.session_id} className={`s-item ${sessionId === s.session_id ? 's-active' : ''}`} onClick={() => loadSession(s.session_id)}>
-                        <span>{s.title || 'Session'}</span>
-                      </button>
-                    ))
-                  }
+            {showLanguageSelector && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="language-selector-overlay"
+              >
+                <div className="selector-header">
+                  <Languages size={20} />
+                  <span>Select Target Language</span>
+                  <button onClick={() => setShowLanguageSelector(false)}><X size={16} /></button>
+                </div>
+                <div className="selector-grid">
+                   <button onClick={() => { handleTranslateDoc("hi"); setShowLanguageSelector(false); }}>Hindi</button>
+                   <button onClick={() => { handleTranslateDoc("bn"); setShowLanguageSelector(false); }}>Bengali</button>
+                   <button onClick={() => { handleTranslateDoc("te"); setShowLanguageSelector(false); }}>Telugu</button>
+                   <button onClick={() => { handleTranslateDoc("mr"); setShowLanguageSelector(false); }}>Marathi</button>
+                   <button onClick={() => { handleTranslateDoc("ta"); setShowLanguageSelector(false); }}>Tamil</button>
+                   <button onClick={() => { handleTranslateDoc("kn"); setShowLanguageSelector(false); }}>Kannada</button>
+                   <button onClick={() => { handleTranslateDoc("ml"); setShowLanguageSelector(false); }}>Malayalam</button>
+                   <button onClick={() => { handleTranslateDoc("gu"); setShowLanguageSelector(false); }}>Gujarati</button>
+                   <button onClick={() => { handleTranslateDoc("pa"); setShowLanguageSelector(false); }}>Punjabi</button>
+                   <button onClick={() => { handleTranslateDoc("or"); setShowLanguageSelector(false); }}>Odia</button>
+                   <button onClick={() => { handleTranslateDoc("as"); setShowLanguageSelector(false); }}>Assamese</button>
+                   <button onClick={() => { handleTranslateDoc("sa"); setShowLanguageSelector(false); }}>Sanskrit</button>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
-        </nav>
 
-        <div className="sb-bottom">
-          <button className="nav-item" onClick={() => setShowSettings(true)}>
-            <Settings size={15}/> Settings
-          </button>
-        </div>
-      </aside>
-
-      {/* ────────── CENTER CHAT ────────── */}
-      <main className="chat-col">
-
-        {/* Top bar */}
-        <div className="chat-topbar">
-          <button className="theme-btn" onClick={() => applyDark(!isDark)}>
-            {isDark ? <Sun size={16}/> : <Moon size={16}/>}
-          </button>
-          <button className="theme-btn" onClick={() => setVoiceOn(v => !v)} style={{ color: voiceOn ? 'var(--accent)' : undefined }}>
-            {voiceOn ? <Volume2 size={16}/> : <VolumeX size={16}/>}
-          </button>
-          {/* Voice Interface button */}
-          <button
-            className="theme-btn"
-            onClick={openVoice}
-            style={{
-              color: voiceMode !== 'off' ? (isVoiceRec ? '#e74c3c' : 'var(--accent)') : undefined,
-              position: 'relative'
-            }}
-            title="Voice Interface"
-          >
-            {voiceMode === 'off' ? <MicOff size={16}/> : <Mic size={16}/>}
-            {voiceMode !== 'off' && (
-              <span style={{
-                position: 'absolute', top: 2, right: 2,
-                width: 6, height: 6, borderRadius: '50%',
-                background: isVoiceRec ? '#e74c3c' : 'var(--accent)',
-                animation: 'tb 1.2s infinite'
-              }}/>
-            )}
-          </button>
-          <div className="mode-pills">
-            {['chat','agent','search'].map(m => (
-              <button key={m} className={`mode-pill ${mode === m ? 'mp-on' : ''}`} onClick={() => setMode(m)}>
-                {m === 'chat' ? 'Chat' : m === 'agent' ? 'Agent' : 'Search'}
+          {/* Document Attachment Pill (v101.0) */}
+          {currentFile && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="doc-attachment-pill"
+            >
+              <FileText size={14} />
+              <span className="file-name">{currentFile.name}</span>
+              <button 
+                className="purge-btn" 
+                onClick={() => { setCurrentFile(null); if(activeProtocol?.name === "Gmail") resetProtocol(); }}
+                title="Purge Document"
+              >
+                <X size={14} />
               </button>
-            ))}
-          </div>
-        </div>
-        {/* ── Voice Overlay ── */}
-        <AnimatePresence>
-          {showVoice && (
-            <VoiceOverlay
-              status={voiceStatus}
-              mode={voiceMode}
-              onModeChange={changeVoiceMode}
-              transcript={voiceTranscript}
-              dictationText={dictationText}
-              isRecording={isVoiceRec}
-              isSpeaking={isSpeaking}
-              ttsText={ttsText}
-              onClose={() => setShowVoice(false)}
-              onDictationStop={handleDictationStop}
-            />
-          )}
-        </AnimatePresence>
-
-        {/* Memory view overlay */}
-        <AnimatePresence>
-          {view === 'memory' && (
-            <motion.div className="memory-view" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} transition={{ duration: 0.2 }}>
-              <div className="mv-header">
-                <Brain size={16} style={{ color: 'var(--accent)' }}/>
-                <h3>Conversational Memory</h3>
-                <button className="mv-close" onClick={() => setView('home')}><X size={14}/></button>
-              </div>
-              <div className="mv-search">
-                <Search size={13} style={{ color: 'var(--mist)' }}/>
-                <input
-                  className="mv-search-input"
-                  placeholder="Search my memories…"
-                  value={memSearch}
-                  onChange={e => handleMemSearch(e.target.value)}
-                />
-              </div>
-
-              <div className="mv-commands">
-                <span className="mv-hint">Try:</span>
-                {['Remember that…', 'Forget what I said about…', 'What do you remember about…', 'What did we talk about last week?'].map(cmd => (
-                  <button key={cmd} className="mv-cmd-chip" onClick={() => { setView('home'); setQuery(cmd); }}>
-                    {cmd}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mv-scroll">
-                {displayFacts.length > 0 && (
-                  <div className="mv-section">
-                    <div className="mv-section-label">Named Facts</div>
-                    {displayFacts.map((f, i) => <FactEntry key={i} fact={f}/>)}
-                  </div>
-                )}
-                <div className="mv-section">
-                  <div className="mv-section-label">
-                    {memSearchResults ? `Search results` : 'Recent Episodes'}
-                  </div>
-                  {displayEpisodes.length === 0
-                    ? <p style={{ color: 'var(--mist)', fontSize: 12, padding: '8px 4px' }}>No memories yet. Start chatting and I'll remember.</p>
-                    : displayEpisodes.map((e, i) => <MemoryEntry key={i} entry={e}/>)
-                  }
-                </div>
-              </div>
             </motion.div>
           )}
-        </AnimatePresence>
 
-        {/* Nudge history view overlay */}
-        <AnimatePresence>
-          {view === 'nudges' && (
-            <motion.div className="memory-view" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} transition={{ duration: 0.2 }}>
-              <div className="mv-header">
-                <Bell size={16} style={{ color: 'var(--gold)' }}/>
-                <h3>Gentle Nudges</h3>
-                <button className="mv-close" onClick={() => setView('home')}><X size={14}/></button>
-              </div>
-              <div className="mv-scroll">
-                {activeNudges.length === 0
-                  ? <p style={{ color: 'var(--mist)', fontSize: 12, padding: '12px 4px' }}>No pending nudges. Saathi is watching quietly.</p>
-                  : activeNudges.map(n => <NudgeCard key={n.id} nudge={n} onAck={ackNudge} onSuppress={suppressNudge}/>)
-                }
-              </div>
-              <div style={{ padding: '8px 16px', borderTop: '1px solid var(--rule)', color: 'var(--mist)', fontSize: 10, letterSpacing: '.06em' }}>
-                Nudge sensitivity: <strong style={{ color: 'var(--stone)' }}>{userSettings.nudge_sensitivity || 'balanced'}</strong> · change in Settings
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          <div className={`chat-input-bar ${sending ? "pulse-thinking" : ""}`}>
+             <div className="fab-container">
+                <motion.div className="fab-menu">
+                   <AnimatePresence>
+                   {showFab && (
+                     <>
+                       {/* Icon 1: Normal Chat (Left) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.conversation.x, y: fabTargets.conversation.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={resetProtocol}
+                         title="Pure Conversation"
+                       >
+                         <MessageSquare size={20} />
+                       </motion.button>
 
-        {/* Messages */}
-        <div className="messages-area">
-          <div className="crane-bg"/>
-          <div className="messages-inner">
-            <AnimatePresence>
-              {chat.map((msg, i) => (
-                <motion.div key={i} className={`msg-row ${msg.role}`}
-                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.28, ease: [0.4,0,0.2,1] }}
-                >
-                  {msg.role === 'ai' ? (
-                    <div className="bubble-ai">
-                      <div className="ai-sender">SAATHI</div>
-                      <Msg text={msg.text}/>
-                    </div>
-                  ) : (
-                    <div className="bubble-user">{msg.text}</div>
-                  )}
+                       {/* Icon 2: Gmail (30 deg) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.gmail.x, y: fabTargets.gmail.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(Mail, "Gmail", "")}
+                         title="Gmail Courier"
+                       >
+                         <Mail size={20} />
+                       </motion.button>
+
+                       {/* Icon 3: GMeet (60 deg) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.meeting.x, y: fabTargets.meeting.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(Calendar, "GMeet", "")}
+                         title="GMeet Link"
+                       >
+                         <Calendar size={20} />
+                       </motion.button>
+
+                       {/* Icon 4: Translate (90 deg) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.translate.x, y: fabTargets.translate.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(Languages, "Translate", "Translate this doc: ")}
+                         title="Polyglot Engine"
+                       >
+                         <Languages size={20} />
+                       </motion.button>
+
+                       {/* Icon 5: YouTube (120 deg) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.youtube.x, y: fabTargets.youtube.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(Globe, "YouTube", "Open YouTube: ")}
+                         title="YouTube Search"
+                       >
+                         <Globe size={20} />
+                       </motion.button>
+
+                       {/* Icon 6: Computer (150 deg) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.computer.x, y: fabTargets.computer.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(Monitor, "Computer", "Saathi, open my workstation: ")}
+                         title="Computer Control"
+                       >
+                         <Monitor size={20} />
+                       </motion.button>
+
+                       {/* Icon 7: Docs (Right) */}
+                       <motion.button 
+                         className="fab-sub-btn"
+                         initial={{ scale: 0, x: 0, y: 0 }}
+                         animate={{ scale: 1, x: fabTargets.doc.x, y: fabTargets.doc.y }}
+                         exit={{ scale: 0, x: 0, y: 0 }}
+                         onClick={() => handleProtocolSelect(FileText, "Mirror", "Create Google Doc: ")}
+                         title="Mirror: Google Doc"
+                       >
+                         <FileText size={20} />
+                       </motion.button>
+                     </>
+                   )}
+                   </AnimatePresence>
+
+                 <motion.button 
+                   className={`main-fab ${showFab ? "active" : ""} ${activeProtocol ? "protocol-active" : ""}`}
+                   onClick={() => setShowFab(!showFab)}
+                   whileTap={{ scale: 0.9 }}
+                   style={{ background: activeProtocol ? '#1c1917' : 'var(--ink)' }}
+                 >
+                   {activeProtocol ? (
+                      <activeProtocol.icon size={24} />
+                   ) : (
+                      <Plus size={24} style={{ transform: showFab ? "rotate(45deg)" : "rotate(0deg)", transition: 'transform 0.3s ease' }} />
+                   )}
+                 </motion.button>
                 </motion.div>
-              ))}
-            </AnimatePresence>
+             </div>
 
-            {isTyping && (
-              <motion.div className="msg-row ai" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                <div className="bubble-ai">
-                  <div className="ai-sender">SAATHI</div>
-                  <div className="typing"><span/><span/><span/></div>
-                </div>
-              </motion.div>
-            )}
-            <div ref={endRef}/>
+             <input 
+                type="file"
+                ref={fileInputRef}
+                style={{ display: "none" }}
+                onChange={handleFileUpload}
+             />
+
+             <button className="bar-icon-btn" onClick={() => fileInputRef.current.click()} title="Attach Document" style={{ marginRight: '-8px' }}>
+               <Paperclip size={22} />
+             </button>
+
+             <input 
+               className="wabi-input"
+               placeholder="Whisper your intent..."
+               value={draft}
+               onChange={(e) => setDraft(e.target.value)}
+               onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+             />
+
+             <button className="pill-btn send-btn" onClick={handleSend}>
+               <Send size={20} />
+             </button>
           </div>
-        </div>
-
-        {/* Input Dock */}
-        <div className="input-dock">
-          <div className="input-bar">
-            <input
-              className="chat-input" autoFocus
-              type="text" value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && sendMsg()}
-              placeholder={
-                mode === 'agent'  ? 'Automate something…'      :
-                mode === 'search' ? 'Search the live web…'      :
-                'Message Saathi… or "Remember that…" / "Forget…"'
-              }
-            />
-            <button className={`voice-btn ${isListening ? 'on' : ''}`} onClick={toggleListen}>
-              <Mic size={16} style={{ opacity: isListening ? 1 : 0.5 }}/>
-            </button>
-            <button className="send-btn-circle" onClick={() => sendMsg()} disabled={!query.trim()}>
-              <Send size={14}/>
-            </button>
-          </div>
-          <p className="dock-meta">
-            mode: {mode} | {userSettings.name} | memory on
-            {llmStatus && (
-              <span style={{
-                marginLeft: 8,
-                color: llmStatus.ready ? 'var(--accent)' : 'var(--gold)',
-                fontWeight: 500
-              }}>
-                · {llmStatus.provider} ({llmStatus.model})
-              </span>
-            )}
-          </p>
-        </div>
-      </main>
-
-      {/* ────────── RIGHT PANEL ────────── */}
-      <aside className="sb-right">
-        <div className="rp-header">
-          <h2>Context &amp; Insights</h2>
-        </div>
-
-        <div className="rp-scroll">
-
-          {/* Active Nudges (soft cards) */}
-          {activeNudges.length > 0 && (
-            <RPSection title="Gentle Nudges" open={nudgeOpen} onToggle={() => setNudgeOpen(v => !v)}>
-              {activeNudges.slice(0, 3).map(n => (
-                <NudgeCard key={n.id} nudge={n} onAck={ackNudge} onSuppress={suppressNudge}/>
-              ))}
-            </RPSection>
-          )}
-
-          {/* Memory Snapshot */}
-          <RPSection title="Memory Snapshot" open={memOpen} onToggle={() => setMemOpen(v => !v)}>
-            {facts.length === 0 && episodes.length === 0 ? (
-              <div className="ff-tag" style={{ opacity: 0.5 }}>
-                <Sparkles size={12} style={{ color: 'var(--accent)' }}/>
-                <span>Tell me things to remember…</span>
-              </div>
-            ) : (
-              <>
-                {facts.slice(0, 2).map((f, i) => <FactEntry key={i} fact={f}/>)}
-                {episodes.slice(0, 3).map((e, i) => <MemoryEntry key={i} entry={e}/>)}
-                <button className="mem-see-all" onClick={() => setView('memory')}>
-                  <Brain size={11}/> View all memory
-                </button>
-              </>
-            )}
-          </RPSection>
-
-          {/* Focus Flow */}
-          <RPSection title="Focus Flow" open={ffOpen} onToggle={() => setFfOpen(v => !v)}>
-            {events.length === 0
-              ? <div className="ff-tag"><span className="ff-tag-dot"/> Syncing…</div>
-              : events.map(ev => (
-                <div className="ff-tag" key={ev.id}>
-                  <span className="ff-tag-dot"/>
-                  <span>{ev.title}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--mist)' }}>{ev.time}</span>
-                </div>
-              ))
-            }
-          </RPSection>
-
-          {/* Insight Feed */}
-          <RPSection title="Insight Feed" open={ifOpen} onToggle={() => setIfOpen(v => !v)}>
-            {research.length === 0
-              ? <div className="if-card" style={{ opacity: 0.5 }}><div className="if-card-body"><h4>Scanning arXiv…</h4></div></div>
-              : research.map((r, i) => (
-                <a href={r.link} target="_blank" rel="noreferrer" key={i} className="if-card">
-                  <div className="if-card-body">
-                    <h4>{r.title}</h4>
-                    <p className="if-meta">arXiv</p>
-                  </div>
-                  <div className="if-thumb">
-                    <span className="if-thumb-placeholder">{THUMBS[i % THUMBS.length]}</span>
-                  </div>
-                </a>
-              ))
-            }
-          </RPSection>
-
-        </div>
-      </aside>
-
-      {/* ────────── SYNC / QR MODAL ────────── */}
-      <AnimatePresence>
-        {showSync && (
-          <motion.div className="modal-ov"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={e => { if (e.target === e.currentTarget) setShowSync(false); }}
-          >
-            <motion.div className="modal-box"
-              initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 16 }}
-              transition={{ duration: 0.22 }}
-              style={{ maxWidth: 360 }}
-            >
-              <div className="modal-row" style={{ marginBottom: 20 }}>
-                <div>
-                  <h2 style={{ fontFamily: 'Cormorant Garamond', fontWeight: 300, fontSize: 28 }}>📱 Mobile Sync</h2>
-                  <span style={{ fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--stone)' }}>scan to connect • anywhere</span>
-                </div>
-                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--stone)', padding: 6 }} onClick={() => setShowSync(false)}><X size={16}/></button>
-              </div>
-
-              {syncLoading ? (
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 0' }}>
-                  <div style={{ width: 28, height: 28, border: '2px solid var(--rule)', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin .7s linear infinite' }}/>
-                </div>
-              ) : syncData?.error ? (
-                <div style={{ textAlign: 'center', color: 'var(--stone)', fontSize: 13, padding: '20px 0' }}>{syncData.error}</div>
-              ) : syncData ? (
-                <>
-                  {/* Tunnel status */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, background: syncData.tunnel_active || syncData.qr_image ? 'rgba(122,158,120,.1)' : 'rgba(200,165,112,.1)', border: `1px solid ${syncData.tunnel_active || syncData.qr_image ? 'rgba(122,158,120,.3)' : 'rgba(200,165,112,.3)'}`, borderRadius: 10, padding: '8px 12px' }}>
-                    <span style={{ fontSize: 14 }}>{syncData.tunnel_type === 'cloudflare' ? '☁' : syncData.tunnel_type === 'ngrok' ? '🔗' : syncData.tunnel_type === 'lan' ? '📡' : '⚠'}</span>
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: syncData.tunnel_active || syncData.qr_image ? 'var(--accent)' : 'var(--gold)' }}>
-                        {syncData.tunnel_type || 'No tunnel'}
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--stone)' }}>{syncData.public_url || syncData.mobile_url || 'Tunnel initialising…'}</div>
-                    </div>
-                  </div>
-
-                  {/* QR Code */}
-                  {syncData.qr_image ? (
-                    <div style={{ textAlign: 'center', marginBottom: 16 }}>
-                      <div style={{ background: '#fff', borderRadius: 12, padding: 10, display: 'inline-block' }}>
-                        <img src={syncData.qr_image} alt="QR code" style={{ width: 200, height: 200, display: 'block' }}/>
-                      </div>
-                      <p style={{ fontSize: 11, color: 'var(--stone)', marginTop: 8 }}>Scan with your phone camera to connect</p>
-                    </div>
-                  ) : (
-                    <div style={{ textAlign: 'center', marginBottom: 16, padding: '30px 0', color: 'var(--stone)', fontSize: 12 }}>
-                      ⏳ Tunnel starting up… Click Refresh in 10s.
-                    </div>
-                  )}
-
-                  {/* PIN row */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--cream)', borderRadius: 10, padding: '10px 14px', marginBottom: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--stone)', marginBottom: 3 }}>PIN</div>
-                      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '.25em', color: 'var(--ink)', fontFamily: 'DM Sans' }}>{syncData.pin || '—'}</div>
-                    </div>
-                    <div style={{ fontSize: 10, color: 'var(--stone)', textAlign: 'right', maxWidth: 130, lineHeight: 1.5 }}>Enter this PIN when connecting manually</div>
-                  </div>
-
-                  {/* Mobile URL link */}
-                  {syncData.mobile_url && (
-                    <div style={{ background: 'var(--cream)', borderRadius: 10, padding: '8px 12px', marginBottom: 14, wordBreak: 'break-all' }}>
-                      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--stone)', marginBottom: 3 }}>Mobile URL</div>
-                      <a href={syncData.mobile_url} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: 'var(--accent)', textDecoration: 'none' }}>{syncData.mobile_url}</a>
-                    </div>
-                  )}
-
-                  {/* Refresh */}
-                  <button onClick={() => { setSyncData(null); setSyncLoading(false); openSyncPanel(); }} style={{ width: '100%', padding: '11px', background: 'var(--cream)', border: '1px solid var(--rule)', borderRadius: 10, cursor: 'pointer', fontSize: 12, color: 'var(--stone)', fontFamily: 'inherit' }}>↻ Refresh QR</button>
-                </>
-              ) : null}
-
-              {/* CloudFlare install hint */}
-              {!syncData?.tunnel_active && !syncData?.qr_image && !syncLoading && (
-                <div style={{ background: 'rgba(184,147,90,.08)', border: '1px solid rgba(184,147,90,.2)', borderRadius: 10, padding: '12px 14px', marginTop: 14 }}>
-                  <div style={{ fontSize: 12, color: 'var(--gold)', fontWeight: 600, marginBottom: 6 }}>⚡ Enable internet access</div>
-                  <div style={{ fontSize: 11, color: 'var(--stone)', lineHeight: 1.7 }}>
-                    Install <code style={{ color: 'var(--accent)', background: 'var(--cream)', padding: '1px 5px', borderRadius: 3 }}>cloudflared</code> for free internet tunnel:<br/>
-                    <code style={{ color: 'var(--accent)', background: 'var(--cream)', padding: '1px 5px', borderRadius: 3, fontSize: 10 }}>winget install Cloudflare.cloudflared</code>
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ────────── SETTINGS MODAL ────────── */}
-      <AnimatePresence>
-        {showSettings && (
-          <motion.div className="modal-ov"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={e => { if (e.target === e.currentTarget) setShowSettings(false); }}
-          >
-            <motion.div className="modal-box"
-              initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 16 }}
-              transition={{ duration: 0.24 }}
-            >
-              <div className="modal-row" style={{ marginBottom: 0 }}>
-                <h2>設定<br/><span style={{ fontFamily: 'DM Sans', fontSize: 12, fontWeight: 300, color: 'var(--stone)', letterSpacing: '.06em' }}>preferences</span></h2>
-                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--stone)', padding: 6, borderRadius: 6 }} onClick={() => setShowSettings(false)}><X size={16}/></button>
-              </div>
-              <form onSubmit={saveSettings} style={{ marginTop: 28 }}>
-
-                {/* ── LLM STATUS BANNER ───── */}
-                {llmStatus && (
-                  <div style={{
-                    background: llmStatus.ready ? 'rgba(122,158,120,.12)' : 'rgba(200,165,112,.12)',
-                    border: `1px solid ${llmStatus.ready ? 'rgba(122,158,120,.3)' : 'rgba(200,165,112,.35)'}`,
-                    borderRadius: 10, padding: '10px 14px', marginBottom: 22
-                  }}>
-                    <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: llmStatus.ready ? 'var(--accent)' : 'var(--gold)', marginBottom: 4 }}>
-                      {llmStatus.ready ? '✦ AI Engine Active' : '⚠ Offline Mode'}
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--stone)' }}>
-                      {llmStatus.provider} &mdash; {llmStatus.model}
-                    </div>
-                    {!llmStatus.ready && (
-                      <div style={{ fontSize: 11, color: 'var(--mist)', marginTop: 6, lineHeight: 1.6 }}>
-                        Add a <code style={{ color: 'var(--accent)', background: 'var(--cream)', padding: '1px 5px', borderRadius: 3 }}>GEMINI_API_KEY</code> to <code style={{ color: 'var(--accent)', background: 'var(--cream)', padding: '1px 5px', borderRadius: 3 }}>saathi-api/.env</code> for free AI.
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="form-grp">
-                  <label className="form-lbl">Your name</label>
-                  <input className="form-fld" type="text" value={userSettings.name}
-                    onChange={e => setUserSettings(s => ({ ...s, name: e.target.value }))}/>
-                </div>
-                <div className="form-grp">
-                  <label className="form-lbl">Research field</label>
-                  <input className="form-fld" type="text" value={userSettings.interests}
-                    onChange={e => setUserSettings(s => ({ ...s, interests: e.target.value }))}/>
-                </div>
-                <div className="form-grp">
-                  <label className="form-lbl">Reply language</label>
-                  <select className="form-fld" value={userSettings.language}
-                    onChange={e => setUserSettings(s => ({ ...s, language: e.target.value }))}>
-                    <option>English</option><option>Hindi</option><option>Japanese</option><option>French</option>
-                  </select>
-                </div>
-                <div className="form-grp">
-                  <label className="form-lbl">Theme</label>
-                  <select className="form-fld" value={userSettings.theme}
-                    onChange={e => { setUserSettings(s => ({...s, theme: e.target.value})); applyDark(e.target.value === 'dark'); }}>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                  </select>
-                </div>
-
-                {/* ── Nudge Sensitivity ────────────────────────────────── */}
-                <div className="form-grp">
-                  <label className="form-lbl">Nudge sensitivity</label>
-                  <div className="nudge-sensitivity-row">
-                    {['light', 'balanced', 'proactive'].map(lvl => (
-                      <button
-                        key={lvl} type="button"
-                        className={`nudge-sens-btn ${userSettings.nudge_sensitivity === lvl ? 'active' : ''}`}
-                        onClick={() => setUserSettings(s => ({ ...s, nudge_sensitivity: lvl }))}
-                      >
-                        {lvl === 'light' ? '🕊 Light' : lvl === 'balanced' ? '⚖️ Balanced' : '🔔 Proactive'}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="nudge-sens-desc">
-                    {userSettings.nudge_sensitivity === 'light'     ? 'Only time-based reminders, max 1 at a time.' :
-                     userSettings.nudge_sensitivity === 'proactive' ? 'All nudge types — worry, progress, and time.' :
-                     'Time & worry nudges, up to 3 at once.'}
-                  </p>
-                </div>
-
-                <button type="submit" className="save-cta">Save changes</button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </main>
+      </div>
     </div>
   );
+};
+
+export default Dashboard;
+
+// ── SOVEREIGN HUB STYLES (v113.0) ──
+const fabStyles = `
+:root {
+  --saathi-primary: #6366f1;
+  --saathi-bg: #0f172a;
+  --saathi-glass: rgba(30, 41, 59, 0.7);
+  --saathi-border: rgba(255, 255, 255, 0.1);
+}
+
+.chat-input-bar {
+  background: var(--saathi-glass) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--saathi-border) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.pulse-thinking {
+  border-color: var(--saathi-primary) !important;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4) !important;
+  animation: bar-pulse 2s infinite;
+}
+
+@keyframes bar-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  70% { box-shadow: 0 0 0 15px rgba(99, 102, 241, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+}
+
+.msg-bubble {
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--saathi-border);
+}
+
+.assistant .msg-bubble {
+  background: rgba(30, 41, 59, 0.5) !important;
+}
+
+.user .msg-bubble {
+  background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
+  color: white !important;
+  border: none;
+}
+
+.side-panel {
+  background: var(--saathi-bg) !important;
+  color: white !important;
+  border-right: 1px solid var(--saathi-border) !important;
+}
+
+.wabi-card {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid var(--saathi-border) !important;
+  color: white !important;
+}
+
+.wabi-card.active {
+  background: var(--saathi-primary) !important;
+  border-color: transparent !important;
+}
+
+.bar-icon-btn {
+  color: #94a3b8 !important;
+}
+
+.bar-icon-btn:hover {
+  color: white !important;
+  background: rgba(255,255,255,0.1) !important;
+}
+
+.wabi-input {
+  color: white !important;
+}
+
+.wabi-input::placeholder {
+  color: #64748b !important;
+}
+
+.main-fab {
+  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4) !important;
+}
+
+.purge-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #a8a29e;
+  display: flex;
+}
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  padding: 24px;
+  border-radius: 24px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+  border: 1px solid #e7e5e4;
+  z-index: 100000;
+  width: 300px;
+}
+
+.selector-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  font-weight: 600;
+}
+
+.selector-header span { flex: 1; }
+.selector-header button { background: none; border: none; cursor: pointer; color: #a8a29e; }
+
+.selector-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.selector-grid button {
+  padding: 12px;
+  background: #f5f5f4;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: all 0.2s ease;
+}
+
+.selector-grid button:hover {
+  background: var(--ink);
+  color: white;
+}
+
+.chat-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: relative;
+  background: white;
+  padding: 10px 0;
+  width: 100%;
+}
+
+.fab-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  margin-right: 20px;
+}
+
+.fab-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.main-fab {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+  z-index: 100001;
+  pointer-events: auto;
+}
+
+.active-protocol-badge {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1c1917;
+  color: white;
+  padding: 8px 16px;
+  border-radius: 100px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  z-index: 10000;
+}
+
+.badge-icon {
+  width: 24px;
+  height: 24px;
+  background: white;
+  color: #1c1917;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.main-fab.active {
+  background: #78716c;
+}
+
+.fab-sub-btn {
+  position: absolute;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: white;
+  color: var(--ink);
+  border: 1px solid #e7e5e4;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+  z-index: 100002;
+  pointer-events: auto;
+  transition: all 0.2s ease;
+}
+
+.fab-sub-btn:hover {
+  background: #f5f5f4;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+}
+
+.send-btn {
+  border-radius: 100px !important;
+  width: 60px !important;
+  height: 60px !important;
+  padding: 0 !important;
+  justify-content: center !important;
+}
+
+.wabi-input {
+  flex: 1;
+  background: #f5f5f4;
+  border: none;
+  border-radius: 100px;
+  padding: 18px 30px;
+  font-size: 1rem;
+  outline: none;
+  transition: all 0.3s ease;
+}
+
+.wabi-input:focus {
+  background: white;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+`;
+
+if (typeof document !== 'undefined') {
+  const styleSheet = document.createElement("style");
+  styleSheet.innerText = fabStyles;
+  document.head.appendChild(styleSheet);
 }

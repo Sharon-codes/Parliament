@@ -3,19 +3,13 @@ uvicorn
 httpx
 pydantic
 python-dotenv
-google-generativeai
-anthropic
-openai
-websockets
+python-multipart
+PyPDF2
+python-docx
+deep-translator
+openpyxl
+pytz
 psutil
 pyperclip
 pygetwindow
 pyttsx3
-win10toast; sys_platform == "win32"
-
-# Module 12 — Voice Interface
-openai-whisper          # local STT (downloads ~75MB tiny model on first run)
-sounddevice             # cross-platform mic/audio I/O
-webrtcvad               # Voice Activity Detection (VAD)
-pyaudio                 # audio backend fallback (may need: pip install pipwin && pipwin install pyaudio)
-pvporcupine; extra == "voice"  # optional: wake-word (needs PICOVOICE_KEY)

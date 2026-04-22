@@ -1,90 +1,158 @@
+import base64
+import hashlib
+import hmac
+import json
+import mimetypes
 import os
-import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-import uvicorn
-from datetime import datetime, timedelta
-from typing import Optional
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from llm import llm_chat, get_provider_info
+from typing import Optional
+from urllib.parse import quote
 
-from scrapers import search_web, get_latest_arxiv
-from database import init_db, get_settings, update_settings, get_chat_sessions, create_chat_session, get_chat_messages, add_chat_message
-from system_agent import get_active_window_context, get_clipboard, agentic_execute
-from memory import (
-    init_memory_db,
-    store_episode,
-    get_episodes,
-    search_episodes,
-    condense_old_episodes,
-    get_all_facts,
-    store_named_fact,
-    delete_named_fact,
-    get_pending_nudges,
-    acknowledge_nudge,
-    suppress_nudge_topic,
-    get_all_nudges_history,
-    maybe_create_nudge,
-    maybe_create_worry_nudge,
-    get_relevant_memory_context,
-    parse_memory_command,
+import pytz
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from agent_tools import execute_tool, get_mini_tool_definitions
+from document_pipeline import extract_document_payload, translate_document_blocks, translate_text_content
+from google_workspace import (
+    GoogleWorkspaceError,
+    build_google_oauth_url,
+    create_calendar_event,
+    create_google_doc,
+    create_google_doc_from_blocks,
+    exchange_code_for_tokens,
+    fetch_google_userinfo,
+    get_email_detail,
+    list_calendar_events_range,
+    list_recent_emails,
+    list_upcoming_events,
+    oauth_enabled,
+    parse_email_address,
+    read_google_doc_from_url,
+    search_google_contacts,
+    send_new_email,
+    send_reply,
+    ensure_valid_tokens,
 )
-from remote_server import start_remote_server
-from voice_engine import init_voice_engine, get_voice_engine, VoiceMode
-from tunnel_manager import start_tunnel_background, get_sync_session, set_session_pin, get_session_pin
+from llm import get_provider_info, llm_chat
+from storage import StorageError, storage, supabase_enabled, verify_access_token
+from system_agent import launch_app_with_file, parse_desktop_command, play_youtube_video, write_code_to_file
 
-init_db()
-init_memory_db()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-# Start WebSocket remote-control server in background
-try:
-    start_remote_server()
-except Exception as _e:
-    print(f"[Saathi] Remote server failed to start: {_e}")
+PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "http://localhost:5173").strip().rstrip("/")
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://localhost:8000").strip().rstrip("/")
+APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata"
+STATE_SECRET = os.getenv("GOOGLE_OAUTH_STATE_SECRET", "replace-this-in-production").encode("utf-8")
 
-# ── Voice engine async command handler ─────────────────────────────────────────
-async def _voice_command_handler(text: str, mode: str):
-    """Called by voice engine when a spoken command is ready."""
-    settings = get_settings()
-    user_name = settings.get("name", "Friend")
-    language  = settings.get("language", "English")
-    mem_ctx   = get_relevant_memory_context(text)
-    system_prompt = (
-        f"You are Saathi, an elegant personal AI companion. The user's name is {user_name}. "
-        f"Answer in {language}. Keep voice responses concise (1–3 sentences). "
-        f"The user spoke this via voice, so reply naturally as if speaking."
-    )
-    reply = await llm_chat(system_prompt, text, mem_ctx)
-    store_episode(text)
-    store_episode(f"Saathi replied: {reply[:200]}", source="ai")
-    engine = get_voice_engine()
-    if engine:
-        engine.speak(reply)
+REMOTE_DIR = Path(__file__).parent.parent / "saathi-remote"
+PRIMARY_FE_DIST_DIR = Path(__file__).parent / "dist"
+FALLBACK_FE_DIST_DIR = Path(__file__).parent.parent / "saathi-web" / "dist"
+FE_DIST_DIR = FALLBACK_FE_DIST_DIR if FALLBACK_FE_DIST_DIR.exists() else PRIMARY_FE_DIST_DIR
 
-def _voice_command_handler_sync(text: str, mode: str):
-    """Thread-safe wrapper — schedules the async handler on the event loop."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(_voice_command_handler(text, mode), loop)
-    except Exception as e:
-        print(f"[Voice] Command handler error: {e}")
+app = FastAPI(title="Saathi API", version="2.1.0")
 
-# Initialise voice engine
-try:
-    init_voice_engine(on_command=_voice_command_handler_sync)
-except Exception as _ve:
-    print(f"[Saathi] Voice engine init failed: {_ve}")
 
-# Start Cloudflare/ngrok tunnel in background (Module 13 — Mobile Sync)
-try:
-    start_tunnel_background()
-except Exception as _te:
-    print(f"[Saathi] Tunnel start failed: {_te}")
+class ProfileRequest(BaseModel):
+    full_name: Optional[str] = None
+    language: Optional[str] = None
+    voice_gender: Optional[str] = None
+    onboarding_completed: Optional[bool] = None
 
-app = FastAPI(title="Saathi API")
+
+class ChatRequest(BaseModel):
+    text: Optional[str] = None
+    message: Optional[str] = None
+    session_id: Optional[str] = None
+    mode: str = "chat"
+    doc_context: Optional[dict] = None
+
+    @property
+    def prompt(self) -> str:
+        return (self.text or self.message or "").strip()
+
+
+class MemoryRequest(BaseModel):
+    text: str
+
+
+class CreateSessionRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class ReplyEmailRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
+    thread_id: Optional[str] = None
+    message_id_header: Optional[str] = None
+    references: Optional[str] = None
+
+
+class SendEmailRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
+
+
+class CalendarEventRequest(BaseModel):
+    title: str
+    description: str = ""
+    start: str
+    end: str
+    timezone: str = APP_TIMEZONE
+    attendees: list[str] = Field(default_factory=list)
+    generate_meet: bool = False
+
+
+class CreateDocRequest(BaseModel):
+    title: str
+    content: str = ""
+    prompt: Optional[str] = None
+    generate: bool = False
+
+
+class TranslateRequest(BaseModel):
+    name: str
+    content: str
+    target_lang: str = "hi"
+
+
+class ReadDocFromEmailRequest(BaseModel):
+    message_id: str
+    url: Optional[str] = None
+
+
+class OpenAppRequest(BaseModel):
+    app_name: str
+
+
+class OpenYouTubeRequest(BaseModel):
+    query: str
+
+
+@app.exception_handler(StorageError)
+async def storage_exception_handler(_: Request, exc: StorageError):
+    return JSONResponse(status_code=500, content={"ok": False, "detail": str(exc)})
+
+
+@app.exception_handler(GoogleWorkspaceError)
+async def google_exception_handler(_: Request, exc: GoogleWorkspaceError):
+    return JSONResponse(status_code=400, content={"ok": False, "detail": str(exc)})
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(_: Request, exc: Exception):
+    return JSONResponse(status_code=500, content={"ok": False, "detail": str(exc)})
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,478 +162,848 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LLM provider is configured in llm.py via .env (Gemini / Anthropic / OpenAI)
+if REMOTE_DIR.exists():
+    app.mount("/remote", StaticFiles(directory=str(REMOTE_DIR), html=True), name="remote")
 
-# Serve the mobile companion site at /remote
-_remote_dir = Path(__file__).parent.parent / "saathi-remote"
-if _remote_dir.exists():
-    app.mount("/remote", StaticFiles(directory=str(_remote_dir), html=True), name="remote")
 
-# ── Request Models ────────────────────────────────────────────────────────────
+def _sign_state(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = hmac.new(STATE_SECRET, raw, hashlib.sha256).digest()
+    encoded_payload = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+    encoded_sig = base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
+    return f"{encoded_payload}.{encoded_sig}"
 
-class ChatRequest(BaseModel):
-    message: str
-    mode: str = "chat"
-    session_id: str = None
 
-class SettingsRequest(BaseModel):
-    name: str = None
-    role: str = None
-    interests: str = None
-    language: str = None
-    theme: str = None
-    proactive_level: str = None
-    nudge_sensitivity: str = None
+def _unsign_state(token: str) -> dict:
+    try:
+        encoded_payload, encoded_sig = token.split(".", 1)
+        raw = base64.urlsafe_b64decode(encoded_payload + "=" * (-len(encoded_payload) % 4))
+        expected = hmac.new(STATE_SECRET, raw, hashlib.sha256).digest()
+        actual = base64.urlsafe_b64decode(encoded_sig + "=" * (-len(encoded_sig) % 4))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid token format.") from exc
+    if not hmac.compare_digest(expected, actual):
+        raise HTTPException(status_code=400, detail="Token signature check failed.")
+    return json.loads(raw.decode("utf-8"))
 
-class FactRequest(BaseModel):
-    content: str
-    key_phrase: str = ""
 
-class NudgeAckRequest(BaseModel):
-    nudge_id: int
+def _create_token(user_id: str, email: str, full_name: str) -> str:
+    return _sign_state({"id": user_id, "email": email, "full_name": full_name, "type": "saathi_session"})
 
-class SuppressRequest(BaseModel):
-    topic: str
 
-class DeleteMemoryRequest(BaseModel):
-    query: str
+async def get_current_user(request: Request) -> dict:
+    auth_header = request.headers.get("authorization", "").strip()
+    token = auth_header.removeprefix("Bearer").strip() if auth_header.lower().startswith("bearer ") else ""
 
-# ── Settings ──────────────────────────────────────────────────────────────────
+    if not token:
+        raise HTTPException(status_code=401, detail="Please sign in to continue.")
 
-@app.get("/api/settings")
-def get_user_settings():
-    return get_settings()
+    try:
+        payload = _unsign_state(token)
+        if payload.get("type") == "saathi_session":
+            return {
+                "id": payload["id"],
+                "email": payload["email"],
+                "user_metadata": {"full_name": payload.get("full_name", "Friend")},
+                "app_metadata": {"provider": "google"},
+            }
+    except Exception:
+        pass
 
-@app.post("/api/settings")
-def save_user_settings(req: SettingsRequest):
-    return update_settings(req.dict(exclude_none=True))
+    if supabase_enabled():
+        user = await verify_access_token(token)
+        if user:
+            return user
 
-# ── Sessions ─────────────────────────────────────────────────────────────────
+    raise HTTPException(status_code=401, detail="Invalid session. Please sign in again.")
 
-@app.get("/api/sessions")
-def fetch_sessions():
-    return {"sessions": get_chat_sessions()}
 
-@app.get("/api/sessions/{session_id}")
-def fetch_session_messages(session_id: str):
-    return {"messages": get_chat_messages(session_id)}
-
-@app.post("/api/sessions")
-def create_session():
-    return {"session_id": create_chat_session()}
-
-# ── Chat (with memory integration) ───────────────────────────────────────────
-
-@app.post("/api/chat")
-async def chat_with_saathi(req: ChatRequest):
-    settings = get_settings()
-    user_name = settings.get("name", "Friend")
-    language = settings.get("language", "English")
-    nudge_sensitivity = settings.get("nudge_sensitivity", "balanced")
-
-    session_id = req.session_id
-    if not session_id:
-        session_id = create_chat_session()
-
-    add_chat_message(session_id, "user", req.message)
-
-    # ── Check memory commands first ────────────────────────────────────────
-    mem_cmd = parse_memory_command(req.message)
-    if mem_cmd.handled:
-        add_chat_message(session_id, "ai", mem_cmd.reply)
-        return {"reply": mem_cmd.reply, "session_id": session_id}
-
-    # ── Store this message as an episodic memory ──────────────────────────
-    store_episode(req.message)
-
-    # ── Nudge scheduling ──────────────────────────────────────────────────
-    maybe_create_nudge(req.message)
-    maybe_create_worry_nudge(req.message)
-
-    # ── Build context for LLM ─────────────────────────────────────────────
-    context = ""
-    past_messages = get_chat_messages(session_id)
-    if past_messages:
-        memory_str = "\n".join([
-            f"{msg['role'].capitalize()}: {msg['text']}"
-            for msg in past_messages[-6:]
-        ])
-        context += f"-- Session history:\n{memory_str}\n--\n"
-
-    # Inject long-term memory context
-    mem_context = get_relevant_memory_context(req.message)
-    if mem_context:
-        context += f"\n-- Long-term memory:\n{mem_context}\n--\n"
-
-    # Inject active nudges as context hints
-    due_nudges = get_pending_nudges(nudge_sensitivity)
-    if due_nudges:
-        nudge_lines = "\n".join(f"• {n['message']}" for n in due_nudges[:2])
-        context += f"\n-- Gentle reminders you may surface if relevant:\n{nudge_lines}\n--\n"
-
-    if req.mode == "search":
-        try:
-            search_results = search_web(req.message)
-            context += f"Here are live internet results to answer the user: {search_results}\n"
-        except Exception as e:
-            context += f"[Live search failed: {e}]\n"
-
-    if req.mode == "agent":
-        try:
-            active_app = get_active_window_context()
-            clipboard_data = get_clipboard()
-            context += f"SYSTEM CONTEXT: The user is currently looking at window '{active_app}'. Current clipboard text: '{clipboard_data[:200]}...'\n"
-        except:
-            pass
-
-    system_prompt = (
-        f"You are Saathi, an elegant, serene personal AI companion with conversational memory. "
-        f"The user's name is {user_name}. You must answer in {language}. "
-        f"You remember past conversations and gently surface relevant memories when useful. "
-        f"If the user expresses worry or stress, offer a calm, supportive response and ask if they'd like help making a plan. "
-        f"Be warm, insightful, and non-intrusive. Never repeat yourself unnecessarily."
+def _profile_from_identity(user: dict) -> dict:
+    metadata = user.get("user_metadata") or {}
+    return storage.ensure_profile(
+        user["id"],
+        email=user.get("email", ""),
+        full_name=metadata.get("full_name") or metadata.get("name") or "Friend",
     )
 
-    # ── Call LLM (Gemini / Claude / OpenAI — configured in .env) ───────────
-    ai_reply = await llm_chat(system_prompt, req.message, context)
 
-    # Store AI reply as an episode
-    store_episode(f"Saathi responded: {ai_reply[:200]}", source="ai")
-
-    sys_action_result = agentic_execute(req.message, llm_response=ai_reply, mode=req.mode)
-    if sys_action_result and "no immediate desktop tools" not in sys_action_result:
-        ai_reply += f"\n\n*(System Note: {sys_action_result})*"
-
-    add_chat_message(session_id, "ai", ai_reply)
-    return {"reply": ai_reply, "session_id": session_id}
-
-# ── Research & Calendar ───────────────────────────────────────────────────────
-
-@app.get("/api/research")
-def get_daily_briefing():
-    settings = get_settings()
-    user_interests = settings.get("interests", "machine learning robotics")
+async def _workspace_connection(user_id: str) -> dict:
+    connection = storage.get_google_integration(user_id)
+    if not connection:
+        raise HTTPException(status_code=404, detail="Google Workspace is not connected yet.")
     try:
-        papers = get_latest_arxiv(user_interests, max_results=5)
-        return {"papers": papers, "topic": user_interests}
-    except Exception as e:
-        return {"papers": [], "error": str(e), "topic": user_interests}
+        connection = await ensure_valid_tokens(connection)
+    except GoogleWorkspaceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    storage.upsert_google_integration(user_id, connection)
+    return connection
 
-@app.get("/api/calendar")
-def get_real_calendar():
-    now = datetime.now()
-    events = [
-        {"id": "1", "title": "Review latest research in your field", "time": (now + timedelta(minutes=15)).strftime("%I:%M %p"), "type": "deadline"},
-        {"id": "2", "title": "Hackathon Check-in Sync", "time": (now + timedelta(hours=2)).strftime("%I:%M %p"), "type": "meeting"}
-    ]
-    return {"events": events}
 
-# ── Memory API ────────────────────────────────────────────────────────────────
+def _get_base_url(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
 
-@app.get("/api/memory/episodes")
-def api_get_episodes(topic: str = None, days: int = 7):
-    return {"episodes": get_episodes(topic=topic, since_days=days, limit=30)}
+    if forwarded_host and "loca.lt" in forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}"
+    if PUBLIC_API_URL and "localhost" not in PUBLIC_API_URL:
+        return PUBLIC_API_URL
+    return f"{forwarded_proto}://{forwarded_host}"
 
-@app.get("/api/memory/search")
-def api_search_memory(q: str):
-    episodes = search_episodes(q, limit=8)
-    facts = get_all_facts()
-    q_lower = q.lower()
-    relevant_facts = [f for f in facts if q_lower in f["content"].lower() or q_lower in f["key_phrase"].lower()]
-    return {"episodes": episodes, "facts": relevant_facts}
 
-@app.get("/api/memory/facts")
-def api_get_facts(topic: str = None):
-    return {"facts": get_all_facts(topic=topic)}
+def _trim_doc_context(content: str, limit: int = 1800) -> str:
+    if len(content) <= limit:
+        return content
+    return content[:limit] + "\n... [document context trimmed for faster routing]"
 
-@app.post("/api/memory/facts")
-def api_store_fact(req: FactRequest):
-    store_named_fact(req.content, req.key_phrase)
-    return {"ok": True}
 
-@app.delete("/api/memory/facts")
-def api_delete_fact(req: DeleteMemoryRequest):
-    deleted = delete_named_fact(req.query)
-    return {"deleted": deleted}
+def _selected_tool_names(message: str, workspace_connected: bool) -> list[str]:
+    msg = (message or "").lower()
+    selected = {"search_web", "open_url", "launch_app", "play_youtube_video"}
 
-@app.post("/api/memory/condense")
-def api_condense():
-    condense_old_episodes(days_ago=3)
-    return {"ok": True}
+    if workspace_connected:
+        if any(keyword in msg for keyword in ["email", "mail", "reply", "inbox"]):
+            selected.update({"send_email", "reply_to_email", "search_emails", "read_email", "find_contact"})
+        if any(keyword in msg for keyword in ["meeting", "calendar", "event", "schedule"]):
+            selected.update({"create_calendar_event", "schedule_meeting_with_meet", "list_calendar_events", "search_calendar_for_day", "find_contact"})
+        if any(keyword in msg for keyword in ["doc", "document", "google doc", "notes", "write up"]):
+            selected.update({"create_doc", "read_doc_from_url"})
 
-# ── Nudge API ─────────────────────────────────────────────────────────────────
+    return sorted(selected)
 
-@app.get("/api/nudges")
-def api_get_nudges():
-    settings = get_settings()
-    sensitivity = settings.get("nudge_sensitivity", "balanced")
-    return {"nudges": get_pending_nudges(sensitivity)}
 
-@app.get("/api/nudges/history")
-def api_get_nudge_history():
-    return {"nudges": get_all_nudges_history()}
+async def _translate_to_google_doc(
+    *,
+    access_token: str,
+    title: str,
+    plain_text: str,
+    target_lang: str,
+    blocks: Optional[list[dict]] = None,
+) -> dict:
+    translated_blocks = None
+    translated_text = ""
 
-@app.post("/api/nudges/acknowledge")
-def api_ack_nudge(req: NudgeAckRequest):
-    acknowledge_nudge(req.nudge_id)
-    return {"ok": True}
+    if blocks:
+        translated_blocks = await translate_document_blocks(blocks, target_lang)
+        translated_text = "\n".join((block.get("text") or "") for block in translated_blocks).strip()
+    else:
+        translated_text = await translate_text_content(plain_text, target_lang)
 
-@app.post("/api/nudges/suppress")
-def api_suppress_nudge(req: SuppressRequest):
-    suppress_nudge_topic(req.topic)
-    return {"ok": True}
+    if translated_blocks:
+        document = await create_google_doc_from_blocks(access_token, title, translated_blocks)
+    else:
+        document = await create_google_doc(access_token, title, translated_text)
 
-# ── LLM status endpoint ──────────────────────────────────────────────────────
+    return {"document": document, "translated_text": translated_text}
+
+
+async def _generate_document_content(title: str, prompt: str, seed_content: str = "") -> str:
+    doc_prompt = (prompt or "").strip()
+    seed = (seed_content or "").strip()
+    if not doc_prompt and seed:
+        doc_prompt = seed
+    if not doc_prompt:
+        return seed
+
+    system_prompt = (
+        "You are an Elite Workspace Author. You write structured, high-fidelity professional content for Google Docs. "
+        "Your output must be the FULL document body. Use Markdown-like structure (Headings, Bullets, Paragraphs). "
+        "The content must be detailed (300+ words if title warrants it), factual, and polished."
+    )
+    user_prompt = f"Create a document titled '{title}'.\n\nRequest:\n{doc_prompt}"
+    if seed:
+        user_prompt += f"\n\nStarting notes to incorporate and improve:\n{seed}"
+    try:
+        generated = await llm_chat(system_prompt, user_prompt, history=[], tools=None)
+        return (generated or "").strip() or seed or doc_prompt
+    except Exception:
+        return seed or doc_prompt
+
+
+def _extract_json_payload(raw_text: str) -> dict:
+    text = (raw_text or "").strip()
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)```", text, re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start : end + 1]
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+def _detect_code_request(instruction: str) -> Optional[dict]:
+    normalized = re.sub(r"\s+", " ", (instruction or "").strip())
+    if not normalized:
+        return None
+    if not re.search(r"\b(write|create|make|build|draft|generate)\b", normalized, re.IGNORECASE):
+        return None
+    if not re.search(r"\b(program|script|file|code)\b", normalized, re.IGNORECASE):
+        return None
+
+    language = None
+    extension = ".txt"
+    if re.search(r"\bpython\b", normalized, re.IGNORECASE):
+        language = "python"
+        extension = ".py"
+    elif re.search(r"\b(javascript|node|js)\b", normalized, re.IGNORECASE):
+        language = "javascript"
+        extension = ".js"
+    elif re.search(r"\b(html)\b", normalized, re.IGNORECASE):
+        language = "html"
+        extension = ".html"
+
+    if not language:
+        return None
+
+    summary = re.sub(r"^(?:and\s+)?(?:write|create|make|build|draft|generate)\s+", "", normalized, flags=re.IGNORECASE)
+    return {"language": language, "extension": extension, "summary": summary}
+
+
+def _fallback_code_payload(task: dict) -> dict:
+    summary = task["summary"].lower()
+    if task["language"] == "python" and "armstrong" in summary:
+        return {
+            "filename": "armstrong_number.py",
+            "code": (
+                "def is_armstrong(number: int) -> bool:\n"
+                "    digits = str(abs(number))\n"
+                "    power = len(digits)\n"
+                "    total = sum(int(digit) ** power for digit in digits)\n"
+                "    return total == abs(number)\n\n"
+                "number = int(input(\"Enter a number: \"))\n"
+                "if is_armstrong(number):\n"
+                "    print(f\"{number} is an Armstrong number.\")\n"
+                "else:\n"
+                "    print(f\"{number} is not an Armstrong number.\")\n"
+            ),
+        }
+
+    default_name = re.sub(r"[^a-z0-9]+", "_", task["summary"].lower()).strip("_") or "generated_code"
+    comment_prefix = {"python": "#", "javascript": "//", "html": "<!--"}.get(task["language"], "#")
+    comment_suffix = " -->" if task["language"] == "html" else ""
+    return {
+        "filename": f"{default_name[:40]}{task['extension']}",
+        "code": f"{comment_prefix} Starter file for: {task['summary']}{comment_suffix}\n",
+    }
+
+
+async def _build_code_file_from_request(instruction: str) -> Optional[dict]:
+    task = _detect_code_request(instruction)
+    if not task:
+        return None
+
+    fallback = _fallback_code_payload(task)
+    payload = {}
+    try:
+        payload = _extract_json_payload(
+            await llm_chat(
+                "Return JSON only with keys filename and code. Use ASCII only. "
+                "Produce one complete runnable file and nothing else.",
+                f"Language: {task['language']}\nRequest: {task['summary']}",
+                history=[],
+                tools=None,
+            )
+        )
+    except Exception:
+        payload = {}
+
+    filename = os.path.basename((payload.get("filename") or "").strip()) or fallback["filename"]
+    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
+    if not filename.endswith(task["extension"]):
+        filename = f"{Path(filename).stem or 'generated_code'}{task['extension']}"
+
+    code = (payload.get("code") or "").strip() or fallback["code"]
+    if not code.endswith("\n"):
+        code += "\n"
+
+    file_path = write_code_to_file(filename, code)
+    return {"file_path": file_path, "filename": filename, "summary": task["summary"]}
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "ok": True,
+        "storage": storage.mode,
+        "auth": "supabase" if supabase_enabled() else "demo",
+        "workspaceOAuth": oauth_enabled(),
+        "webUrl": PUBLIC_WEB_URL,
+        "apiUrl": PUBLIC_API_URL,
+    }
+
 
 @app.get("/api/llm-status")
 def llm_status():
-    return get_provider_info()
+    status = get_provider_info()
+    status["storage"] = storage.mode
+    return status
 
 
-# ── VOICE ENDPOINTS (Module 12) ───────────────────────────────────────────────
+@app.get("/api/profile")
+async def get_profile(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return {
+        **profile,
+        "demo_mode": not supabase_enabled(),
+        "available_languages": ["English", "Hindi", "Tamil", "Kannada", "Telugu"],
+    }
 
-class VoiceModeRequest(BaseModel):
-    mode: str   # off | push_to_talk | wake_word | ambient | dictation
 
-class VoiceSpeakRequest(BaseModel):
-    text: str
-    urgent: bool = False
+@app.post("/api/profile")
+async def update_profile(req: ProfileRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.update_profile(profile["id"], req.dict(exclude_none=True))
 
-@app.get("/api/voice/status")
-def voice_status():
-    eng = get_voice_engine()
-    if not eng:
-        return {"available": False, "reason": "Voice engine not initialised"}
-    return {"available": True, **eng.get_status()}
 
-@app.post("/api/voice/mode")
-def voice_set_mode(req: VoiceModeRequest):
-    eng = get_voice_engine()
-    if not eng:
-        return {"ok": False, "error": "Voice engine not available"}
-    try:
-        eng.set_mode(VoiceMode(req.mode))
-        return {"ok": True, "mode": req.mode}
-    except ValueError:
-        return {"ok": False, "error": f"Unknown mode '{req.mode}'"}
+@app.get("/api/sessions")
+async def list_sessions(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.list_sessions(profile["id"])
 
-@app.post("/api/voice/speak")
-async def voice_speak(req: VoiceSpeakRequest):
-    eng = get_voice_engine()
-    if not eng:
-        return {"ok": False}
-    if req.urgent:
-        eng.speak_urgent(req.text)
-    else:
-        eng.speak(req.text)
+
+@app.post("/api/sessions")
+async def create_session(req: Optional[CreateSessionRequest] = None, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    title = (req.title if req else None) or "New chat"
+    return storage.create_session(profile["id"], title=title)
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.get_messages(profile["id"], session_id)
+
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    storage.delete_session(profile["id"], session_id)
     return {"ok": True}
 
-@app.post("/api/voice/dictation/stop")
-def voice_stop_dictation():
-    eng = get_voice_engine()
-    if not eng:
-        return {"text": "", "ok": False}
-    text = eng.stop_dictation()
-    return {"text": text, "ok": True}
+
+@app.post("/api/extract-doc")
+async def extract_doc_content(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    content = await file.read()
+    payload = extract_document_payload(file.filename or "document.txt", content)
+    return {"content": payload["plain_text"]}
 
 
-@app.websocket("/ws/voice")
-async def voice_websocket(websocket: WebSocket):
-    """
-    Browser WebSocket for the voice interface.
+@app.post("/api/sessions/{session_id}/translate")
+async def translate_document(session_id: str, req: TranslateRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    if not req.content:
+        raise HTTPException(status_code=400, detail="Document content is empty.")
+    translated = await _translate_to_google_doc(
+        access_token=connection["access_token"],
+        title=f"Polyglot_{req.target_lang}_{req.name}",
+        plain_text=req.content,
+        target_lang=req.target_lang,
+    )
+    return {"link": translated["document"]["url"], "document": translated["document"]}
 
-    Browser → Server (JSON):
-      {"type": "set_mode",       "mode": "wake_word"|"ambient"|...}
-      {"type": "audio",          "data": "<base64 PCM16 mono 16kHz>"}
-      {"type": "dictation_start"}
-      {"type": "dictation_stop"}
-      {"type": "ping"}
 
-    Server → Browser (JSON):
-      {"type": "hello",          "mode", "tts", "stt", "mic_available"}
-      {"type": "mode",           "mode", "msg"}
-      {"type": "wake",           "msg"}
-      {"type": "recording_start"}
-      {"type": "transcript",     "text", "final"}
-      {"type": "tts",            "text"}
-      {"type": "tts_urgent",     "text"}
-      {"type": "dictation_chunk","text"}
-      {"type": "dictation_done", "text"}
-      {"type": "error",          "msg"}
-    """
-    await websocket.accept()
-    eng = get_voice_engine()
-    if not eng:
-        await websocket.send_json({"type": "error", "msg": "Voice engine unavailable"})
-        await websocket.close()
-        return
+@app.get("/api/deadlines")
+@app.get("/api/workspace/deadlines")
+async def get_deadlines(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.list_deadlines(profile["id"])
 
-    eng.register_client(websocket)
+
+@app.get("/api/memory")
+async def get_memory(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.list_memory(profile["id"])
+
+
+@app.post("/api/sessions/{session_id}/chat")
+async def session_chat(session_id: str, req: ChatRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    msg = req.prompt
+    if not msg:
+        raise HTTPException(status_code=400, detail="Message is empty")
+
+    storage.add_message(profile["id"], session_id, "user", msg)
+    history = storage.get_messages(profile["id"], session_id)
+    prior_messages = history[:-1][-6:]
+
+    doc_directive = ""
+    if req.doc_context:
+        name = req.doc_context.get("name", "Document")
+        content = _trim_doc_context(req.doc_context.get("content", ""))
+        doc_directive = (
+            f"\n\n[DOCUMENT CONTEXT]\n"
+            f"Active document: {name}\n"
+            f"Use this context only when the user is clearly referring to the attached document.\n"
+            f"{content}"
+        )
+
+    connection = storage.get_google_integration(profile["id"])
+    access_token = None
+    if connection:
+        try:
+            connection = await ensure_valid_tokens(connection)
+            storage.upsert_google_integration(profile["id"], connection)
+            access_token = connection["access_token"]
+        except Exception:
+            access_token = None
+
+    origin = request.headers.get("x-saathi-origin", "laptop").lower()
+    tools = get_mini_tool_definitions(_selected_tool_names(msg, bool(access_token)))
+    local_tz = pytz.timezone(APP_TIMEZONE)
+    current_time_str = datetime.now(local_tz).strftime("%Y-%m-%d %H:%M:%S")
+    system_prompt = (
+        f"Saathi is an Elite Sovereign Assistant for Desktop and Google Workspace.\n"
+        f"Current time: {current_time_str}\n"
+        f"Timezone: {APP_TIMEZONE}\n"
+        f"{doc_directive}\n"
+        "SOVEREIGN RULES:\n"
+        "1. You are the CONTENT AUTHOR. If asked to 'create' or 'send', compose full, rich, professional content yourself.\n"
+        "2. CALL TOOLS IMMEDIATELY based on the request. Use tool outputs to provide a status update.\n"
+        "3. If details are missing, proceed with high-confidence assumptions or ask precisely for the missing bit.\n"
+        "4. You have direct agency over the user's workspace and hardware."
+    )
+
     try:
-        while True:
-            msg = await websocket.receive_json()
-            mtype = msg.get("type", "")
+        reply = await llm_chat(
+            system_prompt,
+            msg,
+            history=prior_messages,
+            tools=tools,
+            tool_executor=execute_tool,
+            access_token=access_token,
+            timezone=APP_TIMEZONE,
+            profile_id=profile["id"],
+            origin=origin,
+        )
+    except Exception as exc:
+        reply = f"Saathi hit a routing error: {exc}"
 
-            if mtype == "ping":
-                await websocket.send_json({"type": "pong"})
+    storage.add_message(profile["id"], session_id, "assistant", reply)
+    return {"id": str(uuid.uuid4()), "role": "assistant", "text": reply, "created_at": datetime.utcnow().isoformat()}
 
-            elif mtype == "set_mode":
-                try:
-                    eng.set_mode(VoiceMode(msg.get("mode", "off")))
-                except ValueError:
-                    await websocket.send_json({"type": "error", "msg": "Unknown mode"})
 
-            elif mtype == "audio":
-                import base64
-                raw = base64.b64decode(msg.get("data", ""))
-                if raw:
-                    loop = asyncio.get_event_loop()
-                    text = await loop.run_in_executor(None, eng.stt.transcribe, raw)
-                    if text:
-                        await websocket.send_json({"type": "transcript", "text": text, "final": True})
-                        await _voice_command_handler(text, "push_to_talk")
+@app.post("/api/chat")
+async def direct_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    session_id = req.session_id or storage.create_session(profile["id"])["id"]
+    return await session_chat(session_id, req, user)
 
-            elif mtype == "dictation_start":
-                eng.start_dictation()
 
-            elif mtype == "dictation_stop":
-                text = eng.stop_dictation()
-                await websocket.send_json({"type": "dictation_done", "text": text})
+@app.post("/api/workspace/sync")
+async def sync_workspace(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = storage.get_google_integration(profile["id"])
+    if not connection:
+        return {"status": "skipped", "reason": "No Google connection"}
 
-    except WebSocketDisconnect:
-        pass
-    finally:
-        eng.unregister_client(websocket)
+    connection = await ensure_valid_tokens(connection)
+    storage.upsert_google_integration(profile["id"], connection)
+    events = await list_upcoming_events(connection["access_token"], timezone_name=APP_TIMEZONE, max_results=20)
+    return {"status": "success", "count": len(events)}
+
+
+@app.get("/api/workspace/status")
+async def workspace_status(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = storage.get_google_integration(profile["id"])
+    return {
+        "oauthConfigured": oauth_enabled(),
+        "connected": bool(connection),
+        "email": (connection or {}).get("google_email"),
+        "scopes": (connection or {}).get("scopes") or [],
+        "requiredFile": "Google OAuth Web Client JSON (client_id + client_secret)",
+    }
+
+
+@app.get("/api/workspace/connect")
+async def connect_workspace(request: Request, mode: str = "workspace", user: dict = Depends(get_current_user)):
+    if not oauth_enabled():
+        raise HTTPException(status_code=400, detail="Google OAuth is not configured.")
+    _profile_from_identity(user)
+    state = _sign_state({"mode": mode, "ts": datetime.utcnow().isoformat()})
+    redirect_uri = f"{_get_base_url(request)}/api/auth/google/callback"
+    return {"url": build_google_oauth_url(redirect_uri, state, prompt="consent select_account")}
+
+
+@app.delete("/api/workspace/connect")
+async def disconnect_workspace(user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    storage.delete_google_integration(profile["id"])
+    return {"ok": True}
+
+
+@app.get("/api/auth/google/url")
+async def get_google_auth_url(request: Request, mode: str = "signup"):
+    if not oauth_enabled():
+        raise HTTPException(status_code=400, detail="Google OAuth is not configured.")
+    state = _sign_state({"mode": mode, "ts": datetime.utcnow().isoformat()})
+    redirect_uri = f"{_get_base_url(request)}/api/auth/google/callback"
+    return {"url": build_google_oauth_url(redirect_uri, state, prompt="consent select_account")}
+
+
+@app.get("/api/auth/google/callback")
+async def google_auth_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    web_url = PUBLIC_WEB_URL
+    if "localhost" in web_url and "loca.lt" in (request.url.hostname or ""):
+        web_url = f"{request.url.scheme}://{request.url.hostname}"
+        if request.url.port and request.url.port not in {80, 443}:
+            web_url += f":{request.url.port}"
+
+    if error:
+        return RedirectResponse(url=f"{web_url}/auth?error={quote(error)}")
+    if not code or not state:
+        return RedirectResponse(url=f"{web_url}/auth?error=missing_auth_data")
+
+    payload = _unsign_state(state)
+    redirect_uri = f"{_get_base_url(request)}/api/auth/google/callback"
+
+    try:
+        tokens = await exchange_code_for_tokens(code, redirect_uri)
+        userinfo = await fetch_google_userinfo(tokens["access_token"])
+        email = userinfo.get("email")
+        if not email:
+            raise GoogleWorkspaceError("Failed to retrieve Google identity.")
+
+        user_id = email.replace("@", "_").replace(".", "_")
+        storage.upsert_google_integration(
+            user_id,
+            {
+                "google_email": email,
+                "access_token": tokens.get("access_token"),
+                "refresh_token": tokens.get("refresh_token"),
+                "token_expiry": tokens.get("token_expiry"),
+                "scopes": (tokens.get("scope") or "").split(),
+                "connected_at": datetime.utcnow().isoformat(),
+            },
+        )
+
+        saathi_token = _create_token(user_id, email, userinfo.get("name", "Friend"))
+        force_dashboard = payload.get("mode") == "login"
+        is_returning = storage.profile_exists(user_id)
+        if force_dashboard:
+            storage.update_profile(user_id, {"onboarding_completed": True})
+        target = "/dashboard" if (is_returning or force_dashboard) else "/welcome"
+        return RedirectResponse(url=f"{web_url}{target}?token={saathi_token}")
+    except Exception as exc:
+        return RedirectResponse(url=f"{web_url}/auth?error={quote(str(exc))}")
+
+
+@app.get("/api/workspace/contacts/search")
+async def workspace_contact_search(query: str, limit: int = 8, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    contacts = await search_google_contacts(connection["access_token"], query, limit=max(1, min(limit, 12)))
+    return {"contacts": contacts, "bestMatch": contacts[0] if contacts else None}
+
+
+@app.get("/api/workspace/emails")
+async def workspace_emails(limit: int = 6, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    emails = await list_recent_emails(connection["access_token"], max_results=max(1, min(limit, 12)))
+    return {"emails": emails}
+
+
+@app.get("/api/workspace/emails/{message_id}")
+async def workspace_email_detail(message_id: str, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    return await get_email_detail(connection["access_token"], message_id)
+
+
+@app.post("/api/workspace/emails/send")
+async def workspace_send_email(req: SendEmailRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    recipient = parse_email_address(req.to).strip()
+    if not recipient and req.to.strip():
+        matches = await search_google_contacts(connection["access_token"], req.to.strip(), limit=1)
+        if matches:
+            recipient = matches[0]["email"]
+    if not recipient:
+        raise HTTPException(status_code=400, detail="Choose or type a recipient email before sending.")
+    result = await send_new_email(
+        connection["access_token"],
+        to=recipient,
+        subject=req.subject,
+        body=req.body,
+    )
+    return {"ok": True, "message": result}
+
+
+@app.post("/api/workspace/emails/reply")
+async def workspace_reply(req: ReplyEmailRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    result = await send_reply(
+        connection["access_token"],
+        to=parse_email_address(req.to),
+        subject=req.subject,
+        body=req.body,
+        thread_id=req.thread_id,
+        in_reply_to=req.message_id_header,
+        references=req.references,
+    )
+    return {"ok": True, "message": result}
+
+
+@app.get("/api/workspace/calendar")
+async def workspace_calendar(limit: int = 8, timezone: str = APP_TIMEZONE, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    events = await list_upcoming_events(connection["access_token"], timezone, max_results=max(1, min(limit, 12)))
+    return {"events": events}
+
+
+@app.post("/api/workspace/calendar/events")
+async def workspace_create_event(req: CalendarEventRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    start_val = f"{req.start}:00" if req.start and req.start.count(":") == 1 else req.start
+    end_val = f"{req.end}:00" if req.end and req.end.count(":") == 1 else req.end
+    resolved_attendees: list[str] = []
+    for attendee in req.attendees:
+        candidate = parse_email_address(attendee).strip()
+        if candidate and "@" in candidate:
+            resolved_attendees.append(candidate)
+            continue
+        if attendee.strip():
+            matches = await search_google_contacts(connection["access_token"], attendee, limit=1)
+            if matches:
+                resolved_attendees.append(matches[0]["email"])
+    if req.attendees and not resolved_attendees:
+        raise HTTPException(status_code=400, detail="Choose or type a valid attendee email before scheduling.")
+    event = await create_calendar_event(
+        connection["access_token"],
+        title=req.title,
+        description=req.description,
+        start_iso=start_val,
+        end_iso=end_val,
+        timezone_name=req.timezone or APP_TIMEZONE,
+        attendees=resolved_attendees,
+        generate_meet=req.generate_meet,
+    )
+    return {"ok": True, "event": event}
+
+
+@app.post("/api/workspace/docs")
+async def workspace_create_doc(req: CreateDocRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    prompt = (req.prompt or "").strip()
+    content = (req.content or "").strip()
+
+    if req.generate:
+        content = await _generate_document_content(req.title, prompt or content, seed_content=content)
+    elif not content and prompt:
+        content = prompt
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Document content or prompt is required.")
+
+    document = await create_google_doc(connection["access_token"], req.title, content)
+    return {"ok": True, "document": document, "generated_content": content}
+
+
+@app.post("/api/workspace/translate")
+async def workspace_translate_doc(request: Request, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    data = await request.json()
+    text = data.get("text", "")
+    target_lang = data.get("target_lang", "hi")
+    title = data.get("title", "Translated Document")
+
+    if not text:
+        raise HTTPException(status_code=400, detail="No content provided for translation.")
+
+    translated = await _translate_to_google_doc(
+        access_token=connection["access_token"],
+        title=f"{title} [{target_lang}]",
+        plain_text=text,
+        target_lang=target_lang,
+    )
+    storage.add_memory(profile["id"], f"DOCUMENT SUMMARY [{title}]: {translated['translated_text'][:1000]}")
+    return {"ok": True, "document": translated["document"], "translated_text": translated["translated_text"]}
+
+
+@app.post("/api/workspace/translate-file")
+async def workspace_translate_file(
+    file: UploadFile = File(...),
+    target_lang: str = Form("hi"),
+    user: dict = Depends(get_current_user),
+):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    content = await file.read()
+    payload = extract_document_payload(file.filename or "document.txt", content)
+
+    if not payload["plain_text"].strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from file.")
+
+    title = f"Polyglot: {file.filename}"
+    translated = await _translate_to_google_doc(
+        access_token=connection["access_token"],
+        title=f"{title} [{target_lang}]",
+        plain_text=payload["plain_text"],
+        target_lang=target_lang,
+        blocks=payload.get("blocks"),
+    )
+    storage.add_memory(profile["id"], f"DOCUMENT SUMMARY [{title}]: {translated['translated_text'][:1000]}")
+    return {"ok": True, "document": translated["document"], "translated_text": translated["translated_text"]}
+
+
+@app.post("/api/workspace/docs/from-email")
+async def workspace_read_doc_from_email(req: ReadDocFromEmailRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    doc_url = req.url
+    if not doc_url:
+        email_detail = await get_email_detail(connection["access_token"], req.message_id)
+        links = email_detail.get("docLinks") or []
+        if not links:
+            raise HTTPException(status_code=404, detail="No Google Doc link was found in that email.")
+        doc_url = links[0]
+    document = await read_google_doc_from_url(connection["access_token"], doc_url)
+    return {"document": document, "sourceUrl": doc_url}
+
+
+@app.post("/api/memory")
+async def add_memory(req: MemoryRequest, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    return storage.add_memory(profile["id"], req.text)
+
+
+@app.delete("/api/memory/{memory_id}")
+async def delete_memory(memory_id: str, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    storage.delete_memory(profile["id"], memory_id)
+    return {"ok": True}
+
+
+@app.post("/api/workspace/deadlines")
+async def add_manual_deadline(req: dict, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    title = req.get("title")
+    due_date = req.get("date")
+    if not title or not due_date:
+        raise HTTPException(status_code=400, detail="Title and Date are required.")
+    return storage.add_deadline(profile["id"], title, due_date, source_email_id="manual")
+
+
+@app.delete("/api/workspace/deadlines/{deadline_id}")
+async def delete_manual_deadline(deadline_id: str, user: dict = Depends(get_current_user)):
+    profile = _profile_from_identity(user)
+    storage.delete_deadline(profile["id"], deadline_id)
+    return {"ok": True}
+
+
+@app.post("/api/nudges/sync")
+async def sync_nudges(user: dict = Depends(get_current_user)):
+    import asyncio
+
+    profile = _profile_from_identity(user)
+    connection = await _workspace_connection(profile["id"])
+    emails, calendar_events = await asyncio.gather(
+        list_recent_emails(connection["access_token"], max_results=30, query="is:unread newer_than:7d"),
+        list_upcoming_events(connection["access_token"], timezone_name=APP_TIMEZONE, max_results=15),
+    )
+
+    storage.delete_nudges_by_type(profile["id"], "email_unread")
+    storage.delete_nudges_by_type(profile["id"], "calendar_alert")
+
+    existing_deadlines = [item["title"] for item in storage.list_deadlines(profile["id"])]
+    for event in calendar_events or []:
+        storage.add_nudge(profile["id"], f"Cal: {event.get('title')}", f"Starts: {event.get('start')}", "calendar_alert")
+
+    keywords = ["deadline", "assignment", "due", "submission", "exam", "quiz", "test", "urgent"]
+    for email in emails or []:
+        body = email.get("body", "")
+        subject = email.get("subject", "")
+        preview = f"{subject} {body[:200]}".lower()
+        if any(keyword in preview for keyword in keywords) and subject not in existing_deadlines:
+            storage.add_deadline(profile["id"], subject, "Soon", email.get("id", ""))
+            storage.add_nudge(
+                profile["id"],
+                f"New Deadline: {subject}",
+                "Detected in your Gmail. Manage in the Brain Room.",
+                "email_unread",
+            )
+
+    return {"ok": True}
+
+
+@app.post("/api/system/open-app")
+async def system_open_app(req: OpenAppRequest, user: dict = Depends(get_current_user)):
+    _profile_from_identity(user)
+    app_name, follow_up = parse_desktop_command(req.app_name)
+    drafted_file = await _build_code_file_from_request(follow_up)
+
+    if not drafted_file and not follow_up:
+        drafted_file = await _build_code_file_from_request(app_name)
+        if drafted_file:
+            app_name = "vs code"
+
+    if drafted_file:
+        target_app = app_name or "vs code"
+        launch_message = launch_app_with_file(target_app, drafted_file["file_path"])
+        return {
+            "ok": True,
+            "message": f"{launch_message} Drafted {drafted_file['filename']} for {drafted_file['summary']}.",
+        }
+
+    return {"ok": True, "message": launch_app_with_file(app_name or req.app_name)}
+
+
+@app.post("/api/system/open-youtube")
+async def system_open_youtube(req: OpenYouTubeRequest, user: dict = Depends(get_current_user)):
+    _profile_from_identity(user)
+    return {"ok": True, "message": play_youtube_video(req.query)}
+
+
+@app.get("/api/logout")
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/", status_code=303)
+    response.delete_cookie("access_token")
+    return response
+
+
+@app.get("/{full_path:path}")
+async def serve_spa_index(request: Request, full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API route not found")
+
+    file_path = FE_DIST_DIR / full_path
+    if file_path.exists() and file_path.is_file():
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        from fastapi.responses import FileResponse
+
+        return FileResponse(file_path, media_type=mime_type or "application/octet-stream")
+
+    index_path = FE_DIST_DIR / "index.html"
+    if index_path.exists():
+        from fastapi.responses import FileResponse
+
+        return FileResponse(
+            index_path,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
+
+    return JSONResponse({"error": "Frontend build not found."}, status_code=500)
 
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
-# ── SYNC / MOBILE ENDPOINTS ──────────────────────────────────────────────────────
-
-class PinRequest(BaseModel):
-    pin: str
-
-@app.get("/api/sync/session")
-def sync_session():
-    settings = get_settings()
-    return get_sync_session(settings)
-
-@app.get("/api/sync/status")
-def sync_status():
-    from tunnel_manager import _public_url, _tunnel_type, _local_ip
-    return {
-        "tunnel_active": bool(_public_url),
-        "public_url":    _public_url,
-        "tunnel_type":   _tunnel_type,
-        "lan_ip":        _local_ip(),
-        "mobile_url":    f"{_public_url}/remote" if _public_url else None,
-    }
-
-@app.post("/api/sync/pin")
-def sync_update_pin(req: PinRequest):
-    if not req.pin or len(req.pin) < 4:
-        return {"ok": False, "error": "PIN must be at least 4 characters"}
-    set_session_pin(req.pin)
-    return {"ok": True}
-
-# Sync WebSocket — bridges mobile ↔ desktop chat
-# Mobile sends {type:"auth", pin:"..."} then {type:"chat", message:"..."}
-# Server replies with {type:"reply", text:"..."} from LLM
-
-_sync_clients: set = set()
-
-@app.websocket("/ws/sync")
-async def sync_websocket(websocket: WebSocket):
-    await websocket.accept()
-    settings = get_settings()
-
-    # ── Auth ──
-    try:
-        raw = await asyncio.wait_for(websocket.receive_json(), timeout=15)
-    except asyncio.TimeoutError:
-        await websocket.send_json({"type": "error", "msg": "Auth timeout"})
-        await websocket.close()
-        return
-
-    if raw.get("type") != "auth":
-        await websocket.send_json({"type": "error", "msg": "Expected auth message"})
-        await websocket.close()
-        return
-
-    provided = raw.get("pin", "").strip()
-    if provided != get_session_pin():
-        await websocket.send_json({"type": "auth_failed", "msg": "Incorrect PIN"})
-        await websocket.close()
-        return
-
-    await websocket.send_json({
-        "type":    "auth_ok",
-        "name":    settings.get("name", "Saathi"),
-        "msg":     "Connected to Saathi on your laptop.",
-    })
-    _sync_clients.add(websocket)
-
-    # ── Message loop ──
-    try:
-        while True:
-            msg = await websocket.receive_json()
-            mtype = msg.get("type", "")
-
-            if mtype == "ping":
-                await websocket.send_json({"type": "pong"})
-
-            elif mtype == "chat":
-                text    = msg.get("message", "").strip()
-                mode    = msg.get("mode", "chat")
-                if not text:
-                    continue
-
-                # Broadcast "thinking" indicator
-                await websocket.send_json({"type": "thinking"})
-
-                # Build context + call LLM
-                settings = get_settings()
-                user_name = settings.get("name", "Friend")
-                language  = settings.get("language", "English")
-                mem_ctx   = get_relevant_memory_context(text)
-
-                nudge_sensitivity = settings.get("nudge_sensitivity", "balanced")
-                due_nudges = get_pending_nudges(nudge_sensitivity)
-                nudge_ctx  = ""
-                if due_nudges:
-                    nudge_ctx = "\n-- Pending reminders:\n" + "\n".join(f"• {n['message']}" for n in due_nudges[:2])
-
-                if mode == "search":
-                    try:
-                        sr = search_web(text)
-                        mem_ctx += f"\nLive search results: {sr}"
-                    except Exception:
-                        pass
-
-                system_prompt = (
-                    f"You are Saathi, {user_name}'s personal AI companion. "
-                    f"Answer in {language}. The user is on their phone — keep replies concise."
-                )
-
-                reply = await llm_chat(system_prompt, text, mem_ctx + nudge_ctx)
-
-                # Store memory
-                store_episode(text)
-                store_episode(f"Saathi replied: {reply[:200]}", source="ai")
-                maybe_create_nudge(text)
-
-                await websocket.send_json({"type": "reply", "text": reply})
-
-            elif mtype == "nudges":
-                nudges = get_pending_nudges(settings.get("nudge_sensitivity", "balanced"))
-                await websocket.send_json({"type": "nudges", "data": nudges[:5]})
-
-            elif mtype == "ack_nudge":
-                acknowledge_nudge(msg.get("nudge_id", 0))
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        _sync_clients.discard(websocket)

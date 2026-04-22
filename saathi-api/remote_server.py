@@ -152,7 +152,7 @@ async def cmd_play_focus(_args: str, _ws) -> str:
         subprocess.Popen(f'open {url}', shell=True)
     else:
         subprocess.Popen(f'xdg-open {url}', shell=True)
-    return json.dumps({"type": "ok", "msg": "▶ Focus music launched."})
+    return json.dumps({"type": "ok", "msg": "Focus music launched."})
 
 
 async def cmd_download_paper(args: str, ws) -> str:
@@ -178,14 +178,14 @@ async def cmd_pomodoro(args: str, ws) -> str:
     secs = focus_mins * 60
 
     async def _run():
-        await ws.send(json.dumps({"type": "stream", "line": f"🍅 Pomodoro started — {focus_mins} min focus block. Get to work!"}))
+        await ws.send(json.dumps({"type": "stream", "line": f"Pomodoro started — {focus_mins} min focus block. Get to work!"}))
         await asyncio.sleep(secs)
         # Desktop notification
         _desktop_notify("Saathi Pomodoro", f"⏰ {focus_mins}-min focus block complete! Take a 5-min break.")
-        await ws.send(json.dumps({"type": "stream", "line": "✅ Pomodoro complete! Time for a 5-min break."}))
+        await ws.send(json.dumps({"type": "stream", "line": "Pomodoro complete! Time for a 5-min break."}))
 
     asyncio.create_task(_run())
-    return json.dumps({"type": "ok", "msg": f"🍅 Pomodoro timer started ({focus_mins} min)"})
+    return json.dumps({"type": "ok", "msg": f"Pomodoro timer started ({focus_mins} min)"})
 
 
 def _desktop_notify(title: str, body: str):
@@ -233,7 +233,7 @@ async def cmd_run_code(args: str, ws) -> str:
     python_exe  = str(venv_python) if venv_python.exists() else sys.executable
 
     cmd = [python_exe, str(script_path)] + extra_args
-    await ws.send(json.dumps({"type": "stream", "line": f"▶ Running: {' '.join(cmd)}"}))
+    await ws.send(json.dumps({"type": "stream", "line": f"Running: {' '.join(cmd)}"}))
     await ws.send(json.dumps({"type": "stream", "line": f"  cwd: {root}"}))
     await ws.send(json.dumps({"type": "stream", "line": "─" * 40}))
 
@@ -256,7 +256,7 @@ async def cmd_run_code(args: str, ws) -> str:
         await proc.wait()
         rc = proc.returncode
         await ws.send(json.dumps({"type": "stream", "line": "─" * 40}))
-        await ws.send(json.dumps({"type": "stream", "line": f"✔ Exit code: {rc}"}))
+        await ws.send(json.dumps({"type": "stream", "line": f"Exit code: {rc}"}))
 
         if rc != 0 and error_lines:
             tb_snippet = "\n".join(error_lines[-8:])
@@ -455,7 +455,7 @@ async def handler(ws):
     authed[id(ws)] = token
     await ws.send(json.dumps({
         "type": "auth_ok",
-        "msg":  f"Authenticated ✓  Active project: {active_project}",
+        "msg":  f"Authenticated    Active project: {active_project}",
         "active_project": active_project,
     }))
     print(f"[Remote] Authenticated {peer}")
@@ -519,7 +519,7 @@ async def _serve():
         local_ip = "127.0.0.1"
 
     print("=" * 52)
-    print("  🌐 Saathi Remote Server — Module 7")
+    print("  Saathi Remote Server — Module 7")
     print(f"  Local:  ws://{local_ip}:{WS_PORT}")
     print(f"  PIN:    stored at {PIN_HASH_FILE}")
     print(f"  PWA:    open saathi-remote/index.html on phone")

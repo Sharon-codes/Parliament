@@ -424,13 +424,13 @@ def parse_memory_command(text: str) -> MemoryCommandResult:
         content = re.sub(r"^remember\s*(that|:)?\s*", "", t, flags=re.IGNORECASE).strip()
         store_named_fact(content)
         store_episode(f"User asked me to remember: {content}")
-        return MemoryCommandResult(True, f"✦ Noted and stored: "{content}"")
+        return MemoryCommandResult(True, f'✦ Noted and stored: "{content}"')
 
     # ── FORGET ────────────────────────────────────────────────────────────────
     if t_l.startswith("forget what i said about") or t_l.startswith("forget:"):
         query = re.sub(r"^forget(what i said about|:)?\s*", "", t, flags=re.IGNORECASE).strip()
         deleted = delete_named_fact(query)
-        return MemoryCommandResult(True, f"✦ Cleared {deleted} memory entry(ies) related to "{query}".")
+        return MemoryCommandResult(True, f'✦ Cleared {deleted} memory entry(ies) related to "{query}".')
 
     # ── WHAT DO YOU REMEMBER ─────────────────────────────────────────────────
     m = re.match(r"what do you remember about (.+)", t_l)
@@ -446,7 +446,7 @@ def parse_memory_command(text: str) -> MemoryCommandResult:
         if episodes:
             parts.append("**Conversation memories:**\n" + "\n".join(f"• [{e['topic']}] {e['content'][:120]}" for e in episodes))
         if not parts:
-            reply = f"I don't have specific memories about "{topic_query}" yet."
+            reply = f'I don\'t have specific memories about "{topic_query}" yet.'
         else:
             reply = "\n\n".join(parts)
         return MemoryCommandResult(True, reply, {"facts": relevant_facts, "episodes": episodes})
@@ -470,7 +470,7 @@ def parse_memory_command(text: str) -> MemoryCommandResult:
     if m3:
         topic_phrase = m3.group(1).strip()
         suppress_nudge_topic(topic_phrase)
-        return MemoryCommandResult(True, f"✦ I'll never nudge you about "{topic_phrase}" again.")
+        return MemoryCommandResult(True, f'✦ I\'ll never nudge you about "{topic_phrase}" again.')
 
     return MemoryCommandResult(False)
 
