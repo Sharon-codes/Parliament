@@ -492,7 +492,7 @@ def _parse_markdown_to_blocks(content: str) -> list[dict]:
             
         elif raw.startswith("## "):
             h2_count += 1
-            h3_count = 0 # Reset H3 below this H2
+            h3_count = 0 
             blocks.append({
                 "text": f"{h1_count}.{h2_count} {raw[3:]}", 
                 "paragraphStyle": "HEADING_2"
@@ -500,7 +500,7 @@ def _parse_markdown_to_blocks(content: str) -> list[dict]:
             
         elif raw.startswith("# "):
             h1_count += 1
-            h2_count = 0 # Reset H2/H3 below this H1
+            h2_count = 0 
             h3_count = 0
             blocks.append({
                 "text": f"{h1_count}. {raw[2:]}", 
@@ -509,20 +509,33 @@ def _parse_markdown_to_blocks(content: str) -> list[dict]:
         
         # 2. Numbered / Alphabetical Point System for Bullets
         elif raw.startswith("- ") or raw.startswith("* "):
+            # 🦾 v126.0: Aggressive cleaning for bullet text
+            bullet_text = re.sub(r"[\*\_~#`]+", "", raw[2:]).strip()
             blocks.append({
-                "text": raw[2:], 
+                "text": bullet_text, 
                 "paragraphStyle": "NORMAL_TEXT",
-                # Use Numbered Preset instead of Bullet discs
                 "bulletPreset": "NUMBERED_DECIMAL_ALPHA_ROMAN"
             })
         
         # 3. Clean Normal Paragraph
         else:
-            # Deep clean of Bold/Italic as before
-            clean_text = re.sub(r"(\*\*|__)(.*?)\1", r"\2", line)
-            clean_text = re.sub(r"(\*|_)(.*?)\1", r"\2", clean_text)
-            clean_text = clean_text.replace("**", "").replace("__", "").strip()
-            blocks.append({"text": clean_text, "paragraphStyle": "NORMAL_TEXT"})
+            # 🦾 v126.0: DISCARD SETEXT UNDERLINES (Lines of === or ---)
+            if re.match(r"^[=\-\s]{3,}$", raw):
+                continue
+
+            # 🦾 v126.0: AGGRESSIVE MARKER STRIP
+            # Remove Bold / Italic / Strikethrough / Code blocks / Inline symbols
+            # We want THE PURE TEXT only.
+            clean_text = line
+            # Matches any of **, __, *, _, ~~, ` if they are used as markers
+            clean_text = re.sub(r"(\*\*|__|~~|`|\*|_)", "", clean_text)
+            
+            # If the line was supposed to be a header but used the Setext underline above it,
+            # it might still have markdown symbols. Strip them.
+            clean_text = clean_text.replace("#", "").strip()
+            
+            if clean_text:
+                blocks.append({"text": clean_text, "paragraphStyle": "NORMAL_TEXT"})
             
     return blocks
 
