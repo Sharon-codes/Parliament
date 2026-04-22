@@ -156,7 +156,13 @@ async def global_exception_handler(_: Request, exc: Exception):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8000",
+        "http://10.22.66.210:8000",
+        "http://localhost:5173",
+        "https://fuzzy-yaks-spend.loca.lt",
+        "https://plain-areas-rest.loca.lt"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -313,9 +319,16 @@ async def _generate_document_content(title: str, prompt: str, seed_content: str 
     if seed:
         user_prompt += f"\n\nStarting notes to incorporate and improve:\n{seed}"
     try:
-        generated = await llm_chat(system_prompt, user_prompt, history=[], tools=None)
-        return (generated or "").strip() or seed or doc_prompt
-    except Exception:
+        # 💨 NITRO INJECTION (v120.5): Use a minimal system prompt to save tokens
+        lite_system = "Expert Author. Write a detailed professional document. Use Markdown. Produce 300+ words."
+        generated = await llm_chat(lite_system, user_prompt, history=[], tools=None, raw_mode=True)
+        
+        if (generated or "").strip() and (generated.strip() != doc_prompt.strip()):
+            return generated.strip()
+        
+        return seed or doc_prompt
+    except Exception as e:
+        print(f"DEBUG: Generation failed: {e}")
         return seed or doc_prompt
 
 
@@ -402,11 +415,13 @@ async def _build_code_file_from_request(instruction: str) -> Optional[dict]:
     try:
         payload = _extract_json_payload(
             await llm_chat(
-                "Return JSON only with keys filename and code. Use ASCII only. "
-                "Produce one complete runnable file and nothing else.",
-                f"Language: {task['language']}\nRequest: {task['summary']}",
+                "You are an Elite Software Engineer. Return JSON only with keys filename and code. Use ASCII only. "
+                "Produce the COMPLETE, operational source code for the requested program. "
+                "Do not return comments/fallbacks. Return at least 20-50 lines of functional implementation.",
+                f"Language: {task['language']}\nRequest Summary: {task['summary']}",
                 history=[],
                 tools=None,
+                raw_mode=True
             )
         )
     except Exception:
@@ -804,10 +819,11 @@ async def workspace_create_doc(req: CreateDocRequest, user: dict = Depends(get_c
     prompt = (req.prompt or "").strip()
     content = (req.content or "").strip()
 
-    if req.generate:
+    # 🧬 FORCE GENERATION (v119.0): Never echo prompts.
+    if not content and prompt:
+        content = await _generate_document_content(req.title, prompt, seed_content="")
+    elif req.generate:
         content = await _generate_document_content(req.title, prompt or content, seed_content=content)
-    elif not content and prompt:
-        content = prompt
 
     if not content:
         raise HTTPException(status_code=400, detail="Document content or prompt is required.")

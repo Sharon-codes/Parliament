@@ -5,6 +5,7 @@ export async function apiFetch(path, { session, method = "GET", body, headers = 
   const finalHeaders = { 
     ...headers,
     "Bypass-Tunnel-Reminder": "true",
+    "bypass-tunnel-reminder": "true",
     "X-Saathi-Origin": isMobile ? "mobile" : "laptop"
   };
   

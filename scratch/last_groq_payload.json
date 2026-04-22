@@ -1,0 +1,15 @@
+{
+  "model": "llama-3.1-8b-instant",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are an Elite Software Engineer. Return JSON only with keys filename and code. Use ASCII only. Produce the COMPLETE, operational source code for the requested program. Do not return comments/fallbacks. Return at least 20-50 lines of functional implementation."
+    },
+    {
+      "role": "user",
+      "content": "Language: python\nRequest Summary: a python program to multiply two numbers"
+    }
+  ],
+  "temperature": 0.1,
+  "max_tokens": 1024
+}

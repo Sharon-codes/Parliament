@@ -89,9 +89,9 @@ def _tool_catalog() -> list[dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "to": {"type": "string"},
+                    "to": {"type": "string", "description": "Full email address or contact name."},
                     "subject": {"type": "string"},
-                    "body": {"type": "string"},
+                    "body": {"type": "string", "description": "FULL professional email body. You ARE THE AUTHOR. generate 200+ words if needed."},
                 },
                 "required": ["to", "subject", "body"],
             },
@@ -119,7 +119,7 @@ def _tool_catalog() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "title": {"type": "string"},
-                    "content": {"type": "string"},
+                    "content": {"type": "string", "description": "FULL rich document content. You ARE THE AUTHOR. If an outline is provided, generate the full detailed text (500+ words). DO NOT ECHO."},
                 },
                 "required": ["title", "content"],
             },
@@ -226,6 +226,18 @@ def _tool_catalog() -> list[dict[str, Any]]:
             "description": "Delete spam messages from Gmail.",
             "parameters": {"type": "object", "properties": {}},
         },
+        {
+            "name": "write_local_file",
+            "description": "Write code or text to a local file in your workstation. Use this before launching apps to ensure they have content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Name of the file (e.g. hello.py)"},
+                    "content": {"type": "string", "description": "Full content of the file."}
+                },
+                "required": ["filename", "content"]
+            }
+        }
     ]
 
 
@@ -376,6 +388,9 @@ async def execute_tool(
 
         if name == "empty_spam":
             return await delete_spam_messages(access_token)
+
+        if name == "write_local_file":
+            return f"File created: {system_agent.write_code_to_file(args['filename'], args['content'])}"
 
         return f"Unknown tool: {name}"
     except Exception as exc:

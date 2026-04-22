@@ -37,7 +37,7 @@ async def _call_gemini(system_prompt: str, user_message: str, history: list[dict
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192}
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
     }
     if tools: payload["tools"] = tools
 
@@ -61,16 +61,23 @@ async def _call_groq(system_prompt: str, user_message: str, history: list[dict[s
             messages.append({"role": itm["role"], "content": itm["text"]})
     messages.append({"role": "user", "content": user_message})
     
-    payload = {"model": GROQ_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 8192}
+    payload = {"model": GROQ_MODEL, "messages": messages, "temperature": 0.1, "max_tokens": 1024}
     
-    # 🛡️ NEURAL HYGIENE (v112.5): Ensure tools are ALWAYS available from turn one.
+    # 🛡️ NEURAL HYGIENE (v120.8): Aggressively prune tools for low-TPM environments.
     if tools:
-        GROQ_TOOL_ALLOWLIST = {"search_emails", "list_emails", "send_email", "read_email", "create_doc", "search_web", "reply_to_email", "launch_app", "run_local_python", "read_local_file", "list_local_files", "create_calendar_event", "list_calendar_events", "read_doc_from_url", "play_youtube_video", "empty_spam", "schedule_meeting_with_meet", "find_contact", "search_calendar_for_day", "open_url"}
+        # Pruning redundant or non-presentation-critical tools to stay under 6000 TPM
+        GROQ_TOOL_ALLOWLIST = {
+            "search_emails", "send_email", "create_doc", "search_web", 
+            "launch_app", "run_local_python", "write_local_file",
+            "list_emails", "read_email", "list_local_files", "read_local_file"
+        }
         formatted = []
         for ts in tools:
             for d in ts.get("function_declarations", []):
                 if d["name"] in GROQ_TOOL_ALLOWLIST:
-                    formatted.append({"type":"function","function":{"name":d["name"],"description":d["description"],"parameters":d["parameters"]}})
+                    # Strip long descriptions to save tokens
+                    desc = d["description"][:100] + "..." if len(d["description"]) > 100 else d["description"]
+                    formatted.append({"type":"function","function":{"name":d["name"],"description":desc,"parameters":d["parameters"]}})
         payload["tools"] = formatted
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -107,14 +114,20 @@ def _provider_config(provider: str) -> dict[str, Any]:
 def _available_providers() -> list[str]:
     return [p for p in PROVIDER_ORDER if _provider_config(p).get("enabled")]
 
-async def llm_chat(system_prompt: str, user_message: str, history: list[dict[str, Any]] = None, tools: list[dict[str, Any]] = None, tool_executor=None, access_token: str = None, timezone: str = "UTC", profile_id: str = None, origin: str = "laptop") -> str:
-    # ⚡ SOVEREIGN DIRECTIVE (v113.0): Force high-fidelity composition and immediate execution.
-    INTERNAL_SYSTEM = (system_prompt or "") + (
-        "\n\nCRITICAL CORE DIRECTIVE:\n"
-        "1. If the user asks to 'Create', 'Send', or 'Draft', you ARE THE AUTHOR. Compose the FULL content (300+ words if needed) yourself. DO NOT echo the user's brief query into the 'content' parameter.\n"
-        "2. CALL TOOLS IMMEDIATELY. Do not explain your intent. Execute first, narrate second.\n"
-        "3. You are a Sovereign OS Companion. Use direct, professional tone."
-    )
+async def llm_chat(system_prompt: str, user_message: str, history: list[dict[str, Any]] = None, tools: list[dict[str, Any]] = None, tool_executor=None, access_token: str = None, timezone: str = "UTC", profile_id: str = None, origin: str = "laptop", raw_mode: bool = False) -> str:
+    # 🧬 SOVEREIGN DIRECTIVE (v120.9): Force high-fidelity composition. 
+    INTERNAL_SYSTEM = (system_prompt or "")
+    if not (raw_mode or tools is None):
+        INTERNAL_SYSTEM += (
+            "\n\nCRITICAL CORE DIRECTIVE:\n"
+            "1. If the user asks to 'Create', 'Send', or 'Draft', you ARE THE AUTHOR. Compose the FULL content yourself. DO NOT echo instructions.\n"
+            "2. CALL TOOLS IMMEDIATELY. Execute first, narrate second.\n"
+            "3. You are a Sovereign OS Companion."
+        )
+    
+    # 🛡️ NEURAL LITE (v120.9): Extreme Cap for low-TPM environments (Limit < 6000)
+    if tools is None and not raw_mode:
+        INTERNAL_SYSTEM = (system_prompt or "Expert Author. Write 300+ words of professional content. Markdown only.")
     
     available = _available_providers()
     optimized_order = [p for p in PROVIDER_ORDER if p in available]
@@ -161,7 +174,9 @@ async def llm_chat(system_prompt: str, user_message: str, history: list[dict[str
                     contents.extend(tool_results)
                     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                         resp = await client.post(url, json={"system_instruction": {"parts": [{"text": INTERNAL_SYSTEM}]}, "contents": contents, "tools": tools})
-                    if resp.status_code >= 400: break
+                    if resp.status_code >= 400: 
+                        print(f"DEBUG: Gemini Re-call failed: {resp.status_code} {resp.text}")
+                        break
                     parts = resp.json()["candidates"][0]["content"]["parts"]
                     res = {"text": "".join([p["text"] for p in parts if "text" in p]).strip(), "tool_calls": [p["functionCall"] for p in parts if "functionCall" in p]}
                 return res["text"]
@@ -198,7 +213,7 @@ async def llm_chat(system_prompt: str, user_message: str, history: list[dict[str
                     
                     # 🛡️ INTEGRITY FIX (v112.2): Include tools in re-call
                     fmt = []
-                    GROQ_TOOL_ALLOWLIST = {"search_emails", "list_emails", "send_email", "read_email", "create_doc", "search_web", "reply_to_email", "launch_app", "run_local_python", "read_local_file", "list_local_files", "create_calendar_event", "list_calendar_events", "read_doc_from_url", "play_youtube_video", "empty_spam", "schedule_meeting_with_meet", "find_contact", "search_calendar_for_day", "open_url"}
+                    GROQ_TOOL_ALLOWLIST = {"search_emails", "list_emails", "send_email", "read_email", "create_doc", "search_web", "reply_to_email", "launch_app", "run_local_python", "read_local_file", "list_local_files", "create_calendar_event", "list_calendar_events", "read_doc_from_url", "play_youtube_video", "empty_spam", "schedule_meeting_with_meet", "find_contact", "search_calendar_for_day", "open_url", "write_local_file"}
                     for ts in (tools or []):
                         for d in ts.get("function_declarations", []):
                             if d["name"] in GROQ_TOOL_ALLOWLIST:
@@ -210,17 +225,21 @@ async def llm_chat(system_prompt: str, user_message: str, history: list[dict[str
                             "model": GROQ_MODEL, 
                             "messages": messages,
                             "tools": fmt if fmt else None,
-                            "temperature": 0.1
+                            "temperature": 0.1,
+                            "max_tokens": 2048
                         })
-                    if resp.status_code >= 400: break
+                    if resp.status_code >= 400:
+                        print(f"DEBUG: Groq Re-call failed: {resp.status_code} {resp.text}")
+                        break
                     msg = resp.json()["choices"][0]["message"]
                     raw_calls = msg.get("tool_calls") or []
                     res = {"text": (msg.get("content") or "").strip(), "tool_calls": [{"name": rc["function"]["name"], "args": json.loads(rc["function"]["arguments"])} for rc in raw_calls]}
                 return res["text"]
 
         except Exception as e:
-            print(f"DEBUG: Neural Provider {primary} FAILED with: {e}")
-            last_error = f"{primary.capitalize()} connection failed: {e}"
+            err_msg = str(e)
+            print(f"DEBUG: Neural Provider {primary} FAILED with: {err_msg}")
+            last_error = f"{primary.capitalize()} error: {err_msg[:200]}"
             continue
             
     raise LLMCallError(f"NEURAL CORE INSTABILITY: All providers failed. Last Error: {last_error}")

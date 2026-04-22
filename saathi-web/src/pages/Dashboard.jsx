@@ -131,6 +131,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
   const [pendingQuickActionPrompt, setPendingQuickActionPrompt] = useState("");
   const fileInputRef = useRef(null);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
 
   const messagesEndRef = useRef(null);
@@ -269,19 +270,28 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
     const file = e.target.files[0];
     if (file) {
       setSending(true);
+      setUploadProgress(10);
       const formData = new FormData();
       formData.append("file", file);
       
+      const simulateProgress = setInterval(() => {
+        setUploadProgress(prev => (prev < 90 ? prev + 15 : prev));
+      }, 300);
+
       try {
         const res = await apiFetch(`/api/extract-doc`, {
           session,
           method: "POST",
           body: formData
         });
-        setCurrentFile({ name: file.name, content: res.content, file });
+        setUploadProgress(100);
+        setTimeout(() => setUploadProgress(0), 800);
+        setCurrentFile({ name: file.name, content: res.content, file, size: (file.size / 1024).toFixed(1) + " KB" });
       } catch (err) {
+        setUploadProgress(0);
         alert("Failed to read document: " + err.message);
       } finally {
+        clearInterval(simulateProgress);
         setSending(false);
       }
     }
@@ -297,13 +307,11 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
         const formData = new FormData();
         formData.append("file", currentFile.file);
         formData.append("target_lang", targetLang || "hi");
-        const response = await fetch(`${API_BASE}/api/workspace/translate-file`, {
+        res = await apiFetch(`/api/workspace/translate-file`, {
+          session,
           method: "POST",
-          headers: { Authorization: `Bearer ${session.access_token}` },
           body: formData,
         });
-        if (!response.ok) throw new Error("Translation upload failed.");
-        res = await response.json();
       } else {
         const sid = await ensureSession(currentFile.name);
         res = await apiFetch(`/api/sessions/${sid}/translate`, {
@@ -602,26 +610,54 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
             )}
           </AnimatePresence>
 
-          {/* Document Attachment Pill (v101.0) */}
-          {currentFile && (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="doc-attachment-pill"
-            >
-              <FileText size={14} />
-              <span className="file-name">{currentFile.name}</span>
-              <button 
-                className="purge-btn" 
-                onClick={() => { setCurrentFile(null); if(activeProtocol?.name === "Gmail") resetProtocol(); }}
-                title="Purge Document"
+          {/* Premium Document Attachment Pill (v118.0) */}
+          <AnimatePresence>
+            {currentFile && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="premium-doc-pill"
               >
-                <X size={14} />
-              </button>
-            </motion.div>
-          )}
+                <div className="doc-icon-box">
+                  <FileText size={18} />
+                </div>
+                <div className="doc-info">
+                  <span className="doc-name">{currentFile.name}</span>
+                  <span className="doc-meta">Neural Context Ready • {currentFile.size}</span>
+                </div>
+                <button 
+                  className="doc-purge-btn" 
+                  onClick={() => { setCurrentFile(null); if(activeProtocol?.name === "Gmail") resetProtocol(); }}
+                >
+                  <X size={16} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          <div className={`chat-input-bar ${sending ? "pulse-thinking" : ""}`}>
+          {/* Neural Analysis Progress */}
+          <AnimatePresence>
+            {uploadProgress > 0 && (
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="upload-progress-bar"
+              >
+                <div className="progress-label">Neural Analysis Underway... {uploadProgress}%</div>
+                <div className="progress-track">
+                  <motion.div 
+                    className="progress-fill" 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="chat-input-bar">
              <div className="fab-container">
                 <motion.div className="fab-menu">
                    <AnimatePresence>
@@ -760,87 +796,38 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
 
 export default Dashboard;
 
-// ── SOVEREIGN HUB STYLES (v113.0) ──
 const fabStyles = `
-:root {
-  --saathi-primary: #6366f1;
-  --saathi-bg: #0f172a;
-  --saathi-glass: rgba(30, 41, 59, 0.7);
-  --saathi-border: rgba(255, 255, 255, 0.1);
-}
-
-.chat-input-bar {
-  background: var(--saathi-glass) !important;
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--saathi-border) !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.pulse-thinking {
-  border-color: var(--saathi-primary) !important;
-  box-shadow: 0 0 20px rgba(99, 102, 241, 0.4) !important;
-  animation: bar-pulse 2s infinite;
-}
-
-@keyframes bar-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
-  70% { box-shadow: 0 0 0 15px rgba(99, 102, 241, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
-}
-
 .msg-bubble {
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--saathi-border);
+  padding: 16px 24px;
+  border-radius: 20px;
+  font-size: 1rem;
 }
 
 .assistant .msg-bubble {
-  background: rgba(30, 41, 59, 0.5) !important;
+  background: #f5f5f4;
+  color: #1c1917;
 }
 
 .user .msg-bubble {
-  background: linear-gradient(135deg, #6366f1, #4f46e5) !important;
-  color: white !important;
-  border: none;
+  background: #1c1917;
+  color: white;
 }
 
 .side-panel {
-  background: var(--saathi-bg) !important;
-  color: white !important;
-  border-right: 1px solid var(--saathi-border) !important;
+  background: white;
+  border-right: 1px solid #e7e5e4;
 }
 
 .wabi-card {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border: 1px solid var(--saathi-border) !important;
-  color: white !important;
+  background: #f5f5f4;
+  border: 1px solid #e7e5e4;
 }
 
 .wabi-card.active {
-  background: var(--saathi-primary) !important;
-  border-color: transparent !important;
+  background: #1c1917;
+  color: white;
 }
 
-.bar-icon-btn {
-  color: #94a3b8 !important;
-}
-
-.bar-icon-btn:hover {
-  color: white !important;
-  background: rgba(255,255,255,0.1) !important;
-}
-
-.wabi-input {
-  color: white !important;
-}
-
-.wabi-input::placeholder {
-  color: #64748b !important;
-}
-
-.main-fab {
-  box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4) !important;
-}
 
 .purge-btn {
   background: none;
@@ -1015,6 +1002,94 @@ const fabStyles = `
   background: white;
   box-shadow: inset 0 0 0 2px var(--ink);
 }
+
+.premium-doc-pill {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: white;
+  border: 1px solid #e7e5e4;
+  border-radius: 16px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.1);
+  z-index: 1000;
+  min-width: 280px;
+}
+
+.doc-icon-box {
+  width: 40px;
+  height: 40px;
+  background: #f5f5f4;
+  color: #1c1917;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.doc-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #1c1917;
+}
+
+.doc-meta {
+  font-size: 0.75rem;
+  color: #78716c;
+}
+
+.doc-purge-btn {
+  background: none;
+  border: none;
+  color: #d6d3d1;
+  cursor: pointer;
+  padding: 4px;
+  margin-left: auto;
+  transition: color 0.2s;
+}
+
+.doc-purge-btn:hover { color: #ef4444; }
+
+.upload-progress-bar {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  text-align: center;
+  z-index: 1001;
+}
+
+.progress-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #1c1917;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.progress-track {
+  width: 100%;
+  height: 6px;
+  background: #f5f5f4;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #1c1917;
+}
 `;
 
 if (typeof document !== 'undefined') {
@@ -1022,3 +1097,4 @@ if (typeof document !== 'undefined') {
   styleSheet.innerText = fabStyles;
   document.head.appendChild(styleSheet);
 }
+
