@@ -260,9 +260,26 @@ def agentic_execute(task_command: str, llm_response: str | None = None, mode: st
     if llm_response and mode == "agent":
         import re
 
-        code_blocks = re.findall(r"```[^\n]*\n(.*?)```", llm_response, re.DOTALL)
-        if code_blocks:
-            filepath = write_code_to_file("generated_code.py", code_blocks[0].strip())
+    if llm_response and mode == "agent":
+        import re
+        # 🦾 SOVEREIGN PARSER (v123.0): Robust Tag-Based Extraction with Cutoff Recovery
+        match = re.search(r"\[SOURCE_START\]([\s\S]+?)\[SOURCE_END\]", llm_response)
+        if not match:
+            # Cutoff recovery
+            match = re.search(r"\[SOURCE_START\]([\s\S]+)$", llm_response)
+        if not match:
+            # Legacy fallback
+            match = re.search(r"```[^\n]*\n(.*?)```", llm_response, re.DOTALL)
+            
+        if match:
+            code = match.group(1).strip()
+            # Clean up markdown fences
+            code = re.sub(r"^```[\w]*\n|```$", "", code, flags=re.MULTILINE).strip()
+            if "[SOURCE_END]" not in llm_response and "[SOURCE_START]" in llm_response:
+                 code += "\n\n# [AI NOTICE]: Partial stream recovery."
+                 
+            filepath = write_code_to_file("generated_code.py", code)
+            
             if "open vs code" in task_lower or "visual studio code" in task_lower or "editor" in task_lower:
                 results.append(launch_app_with_file("vs code", filepath))
             if "run" in task_lower or "execute" in task_lower or "output" in task_lower:

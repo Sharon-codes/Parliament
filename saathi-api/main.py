@@ -353,9 +353,13 @@ def _detect_code_request(instruction: str) -> Optional[dict]:
     normalized = re.sub(r"\s+", " ", (instruction or "").strip())
     if not normalized:
         return None
-    if not re.search(r"\b(write|create|make|build|draft|generate)\b", normalized, re.IGNORECASE):
+    if not re.search(r"\b(write|create|make|build|draft|generate|code|program)\b", normalized, re.IGNORECASE):
         return None
-    if not re.search(r"\b(program|script|file|code)\b", normalized, re.IGNORECASE):
+    # Optional program keyword or just language check
+    has_program_kv = re.search(r"\b(program|script|file|code|game|app|application|tool|logic)\b", normalized, re.IGNORECASE)
+    has_language = re.search(r"\b(python|javascript|node|js|html|css|cpp|java)\b", normalized, re.IGNORECASE)
+    
+    if not (has_program_kv or has_language):
         return None
 
     language = None
@@ -378,30 +382,20 @@ def _detect_code_request(instruction: str) -> Optional[dict]:
 
 
 def _fallback_code_payload(task: dict) -> dict:
-    summary = task["summary"].lower()
-    if task["language"] == "python" and "armstrong" in summary:
-        return {
-            "filename": "armstrong_number.py",
-            "code": (
-                "def is_armstrong(number: int) -> bool:\n"
-                "    digits = str(abs(number))\n"
-                "    power = len(digits)\n"
-                "    total = sum(int(digit) ** power for digit in digits)\n"
-                "    return total == abs(number)\n\n"
-                "number = int(input(\"Enter a number: \"))\n"
-                "if is_armstrong(number):\n"
-                "    print(f\"{number} is an Armstrong number.\")\n"
-                "else:\n"
-                "    print(f\"{number} is not an Armstrong number.\")\n"
-            ),
-        }
-
     default_name = re.sub(r"[^a-z0-9]+", "_", task["summary"].lower()).strip("_") or "generated_code"
-    comment_prefix = {"python": "#", "javascript": "//", "html": "<!--"}.get(task["language"], "#")
-    comment_suffix = " -->" if task["language"] == "html" else ""
+    
+    # 🧬 SOVEREIGN STARTER (v121.5): High-fidelity boilerplate for presentation stability
+    templates = {
+        "python": "def main():\n    \"\"\"Calculates {summary}\"\"\"\n    print('Starting task...')\n    # TODO: Logic for {summary}\n\nif __name__ == '__main__':\n    main()",
+        "javascript": "async function main() {\n    console.log('Task: {summary}');\n    // TODO: {summary}\n}\nmain();",
+        "html": "<!DOCTYPE html>\n<html>\n<head><title>{summary}</title></head>\n<body>\n  <h1>{summary}</h1>\n</body>\n</html>"
+    }
+    code = templates.get(task["language"], "# {summary}")
+    code = code.replace("{summary}", task["summary"])
+    
     return {
         "filename": f"{default_name[:40]}{task['extension']}",
-        "code": f"{comment_prefix} Starter file for: {task['summary']}{comment_suffix}\n",
+        "code": code,
     }
 
 
@@ -411,32 +405,42 @@ async def _build_code_file_from_request(instruction: str) -> Optional[dict]:
         return None
 
     fallback = _fallback_code_payload(task)
-    payload = {}
+    filename = fallback["filename"]
+    code = fallback["code"]
+
     try:
-        payload = _extract_json_payload(
-            await llm_chat(
-                "You are an Elite Software Engineer. Return JSON only with keys filename and code. Use ASCII only. "
-                "Produce the COMPLETE, operational source code for the requested program. "
-                "Do not return comments/fallbacks. Return at least 20-50 lines of functional implementation.",
-                f"Language: {task['language']}\nRequest Summary: {task['summary']}",
-                history=[],
-                tools=None,
-                raw_mode=True
-            )
+        # 🦾 SOVEREIGN ENGINEER (v121.8): Using robust Tag-Based Extraction
+        res_text = await llm_chat(
+            f"You are an Elite Software Engineer. Return the COMPLETE operational source code for the requested program. "
+            f"Wrap your code EXACTLY between [SOURCE_START] and [SOURCE_END] markers. "
+            f"Provide at least 30 lines of well-commented, functional {task['language']} code.",
+            f"Task: {task['summary']}\nLanguage: {task['language']}",
+            history=[],
+            tools=None,
+            raw_mode=False
         )
-    except Exception:
-        payload = {}
+        
+        # Robust Recovery Parser (v123.0)
+        match = re.search(r"\[SOURCE_START\]([\s\S]+?)\[SOURCE_END\]", res_text)
+        if not match:
+            # Look for partial start tag (cutoff recovery)
+            match = re.search(r"\[SOURCE_START\]([\s\S]+)$", res_text)
+            
+        if match:
+            code = match.group(1).strip()
+            # Clean up markdown fences
+            code = re.sub(r"^```[\w]*\n|```$", "", code, flags=re.MULTILINE).strip()
+            # If we recovered a partial, add a notice
+            if "[SOURCE_END]" not in res_text:
+                code += "\n\n# [AI NOTICE]: This file was recovered from a neural stream cutoff."
+    except Exception as e:
+        print(f"DEBUG: Code drafting failed: {e}")
 
-    filename = os.path.basename((payload.get("filename") or "").strip()) or fallback["filename"]
-    filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename)
-    if not filename.endswith(task["extension"]):
-        filename = f"{Path(filename).stem or 'generated_code'}{task['extension']}"
-
-    code = (payload.get("code") or "").strip() or fallback["code"]
     if not code.endswith("\n"):
         code += "\n"
 
-    file_path = write_code_to_file(filename, code)
+    import system_agent
+    file_path = system_agent.write_code_to_file(filename, code)
     return {"file_path": file_path, "filename": filename, "summary": task["summary"]}
 
 
@@ -963,16 +967,23 @@ async def sync_nudges(user: dict = Depends(get_current_user)):
 @app.post("/api/system/open-app")
 async def system_open_app(req: OpenAppRequest, user: dict = Depends(get_current_user)):
     _profile_from_identity(user)
+    
+    # 🧪 ADVANCED ROUTING (v122.0): Disambiguate App Launching vs Code Drafting
     app_name, follow_up = parse_desktop_command(req.app_name)
-    drafted_file = await _build_code_file_from_request(follow_up)
-
-    if not drafted_file and not follow_up:
-        drafted_file = await _build_code_file_from_request(app_name)
-        if drafted_file:
-            app_name = "vs code"
+    instruction = follow_up or req.app_name
+    
+    # Detect if user actually wants code drafting (proactive mode)
+    code_intent = re.search(r"\b(write|create|make|code|program|script|develop)\b", instruction.lower())
+    
+    drafted_file = None
+    if code_intent:
+        drafted_file = await _build_code_file_from_request(instruction)
 
     if drafted_file:
         target_app = app_name or "vs code"
+        if not app_name and "vs code" not in instruction.lower():
+             target_app = "vs code" # Default to VS Code for drafting
+             
         launch_message = launch_app_with_file(target_app, drafted_file["file_path"])
         return {
             "ok": True,

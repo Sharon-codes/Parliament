@@ -38,12 +38,16 @@ function detectQuickAction(message, activeProtocol) {
 
 function extractAppName(message, activeProtocol) {
   const text = (message || activeProtocol?.draft || "").trim();
-  return text
+  // ROBUST ROUTING (v122.0): Keep implementation intent (write/create/etc)
+  let cleaned = text
     .replace(/^(saathi,\s*)?/i, "")
     .replace(/^(open|launch|start)\s+/i, "")
-    .replace(/\s+(app|application)\s*$/i, "")
     .replace(/\s+(on my laptop|on my computer)\s*$/i, "")
     .trim();
+  
+  // If it starts with "my workstation:", keep the rest
+  cleaned = cleaned.replace(/^(my\s+workstation\s*:?\s*)/i, "").trim();
+  return cleaned;
 }
 
 function extractYouTubeQuery(message, activeProtocol) {
@@ -132,6 +136,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
   const fileInputRef = useRef(null);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [extracting, setExtracting] = useState(false);
   const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
 
   const messagesEndRef = useRef(null);
@@ -279,6 +284,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
       }, 300);
 
       try {
+        setExtracting(true);
         const res = await apiFetch(`/api/extract-doc`, {
           session,
           method: "POST",
@@ -292,6 +298,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
         alert("Failed to read document: " + err.message);
       } finally {
         clearInterval(simulateProgress);
+        setExtracting(false);
         setSending(false);
       }
     }
@@ -610,7 +617,7 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
             )}
           </AnimatePresence>
 
-          {/* Premium Document Attachment Pill (v118.0) */}
+          {/* Premium Document Attachment Pill (v121.8) */}
           <AnimatePresence>
             {currentFile && (
               <motion.div 
@@ -620,11 +627,11 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
                 className="premium-doc-pill"
               >
                 <div className="doc-icon-box">
-                  <FileText size={18} />
+                  <FileText size={20} />
                 </div>
                 <div className="doc-info">
                   <span className="doc-name">{currentFile.name}</span>
-                  <span className="doc-meta">Neural Context Ready • {currentFile.size}</span>
+                  <span className="doc-meta">Neural Sync Active • {currentFile.status || "Ready"}</span>
                 </div>
                 <button 
                   className="doc-purge-btn" 
@@ -632,6 +639,21 @@ const Dashboard = ({ session, profile, setProfile, onSignOut }) => {
                 >
                   <X size={16} />
                 </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Neural Analysis Progress Pill */}
+          <AnimatePresence>
+            {extracting && (
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 20 }}
+                className="analysis-progress-pill"
+              >
+                <LoaderCircle size={18} className="animate-spin" />
+                <span>Anchoring Semantic Context...</span>
               </motion.div>
             )}
           </AnimatePresence>
